@@ -10,5 +10,6 @@ if [ ! -d .venv ]; then
   exit 1
 fi
 
+export PYTHONPATH="$PWD/src"
 .venv/bin/python -m settleready.data.seed --seed 42 --out data
 echo "Fixtures written to ./data/"

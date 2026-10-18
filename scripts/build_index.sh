@@ -13,5 +13,6 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+export PYTHONPATH="$PWD/src"
 .venv/bin/python -m settleready.tools.rag build-index --corpus data/statutes --persist data/chroma
 echo "Index built at ./data/chroma"
