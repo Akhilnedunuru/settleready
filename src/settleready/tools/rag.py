@@ -110,6 +110,18 @@ def retrieve(state: str, question: str, persist_dir: str = "data/chroma",
     return out
 
 
+def inspect_index(persist_dir: str = "data/chroma", provider=None) -> list[dict]:
+    """List everything currently in the statute index (observability).
+
+    Returns [{"id", "state", "source", "text"}] — what build_index put in.
+    """
+    collection = _collection(persist_dir, provider)
+    res = collection.get()
+    return [{"id": _id, "state": (meta or {}).get("state"),
+             "source": (meta or {}).get("source"), "text": doc}
+            for _id, doc, meta in zip(res["ids"], res["documents"], res["metadatas"])]
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -123,9 +135,14 @@ if __name__ == "__main__":
     q.add_argument("--question", required=True)
     q.add_argument("--persist", default="data/chroma")
     q.add_argument("--k", type=int, default=3)
+    i = sub.add_parser("inspect", help="list everything in the index")
+    i.add_argument("--persist", default="data/chroma")
     a = p.parse_args()
     if a.cmd == "build-index":
         print(f"indexed {build_index(a.corpus, a.persist)} chunks")
+    elif a.cmd == "inspect":
+        for r in inspect_index(a.persist):
+            print(f"{r['id']} [{r['state']}/{r['source']}]\n  {r['text'][:160]}…\n")
     else:
         for r in retrieve(a.state, a.question, persist_dir=a.persist, k=a.k):
             print(f"[{r['state']}/{r['citation']} score={r['score']}]\n{r['text']}\n")

@@ -80,11 +80,18 @@ def test_return_requires_valid_reason(tmp_path):
 # -- builder ----------------------------------------------------------------------
 def test_build_packet(tmp_path):
     dd = _case_with_fields(tmp_path)
+    bb = CaseBlackboard(os.path.join(dd, "blackboard.db"))
+    bb.write("C1", "legal_research", {
+        "answer": "100% of ACV [TX.md]", "citations": ["TX.md"],
+        "chunks": [{"text": "threshold chunk", "citation": "TX.md",
+                    "state": "TX", "score": 0.1}]})
+    bb.close()
     p = build_packet("C1", data_dir=dd)
     assert p["case_id"] == "C1"
     assert p["fields"]["vin"]["value"] == "V1"
     assert any("claim_form.pdf" in c for c in p["citations"])
     assert p["return_count"] == 0
+    assert p["legal"]["chunks"][0]["citation"] == "TX.md"
 
 
 # -- eval ----------------------------------------------------------------------------

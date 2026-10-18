@@ -109,6 +109,24 @@ def tab_packet():
     st.write(packet["legal"]["answer"] or "_not run_")
     if packet["legal"]["citations"]:
         st.caption("citations: " + ", ".join(packet["legal"]["citations"]))
+    chunks = packet["legal"].get("chunks", [])
+    with st.expander(f"Retrieved chunks for this case ({len(chunks)})"):
+        if not chunks:
+            st.info("No retrieval trace — run the pipeline's research stage first.")
+        for c in chunks:
+            st.markdown(f"**[{c['state']}/{c['citation']}]** score=`{c['score']}`")
+            st.write(c["text"])
+            st.divider()
+    with st.expander("RAG index contents — what was indexed"):
+        try:
+            from settleready.tools.rag import inspect_index
+            indexed = inspect_index(persist_dir=os.path.join(DATA_DIR, "chroma"))
+            st.write(f"{len(indexed)} chunks in the index")
+            for item in indexed:
+                st.markdown(f"**{item['id']}** [{item['state']}/{item['source']}]")
+                st.caption(item["text"][:220] + "…")
+        except Exception as e:  # noqa: BLE001 — surface it in the UI
+            st.warning(f"Could not read the index: {e}")
 
     st.markdown("**ACV worksheet**")
     acv = packet["acv"]
