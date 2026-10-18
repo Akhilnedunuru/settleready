@@ -83,6 +83,13 @@ class OllamaProvider:
 
 
 def get_provider() -> LLMProvider:
+    # Load .env here so every entry point (CLIs, Streamlit, tests) picks up
+    # OPENAI_API_KEY without each having to remember load_dotenv().
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
     which = os.environ.get("SETTLEREADY_PROVIDER", "openai").lower()
     if which == "openai":
         return OpenAIProvider()
