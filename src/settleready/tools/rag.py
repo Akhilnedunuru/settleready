@@ -26,6 +26,9 @@ class _ProviderEmbeddings:
     def __call__(self, input):  # chroma expects __call__(self, input)
         return [self._provider.embed(t) for t in input]
 
+    def name(self) -> str:  # chroma >=0.5 requires name() for collection config
+        return f"settleready-{self._provider.name}"
+
 
 def _chunk_markdown(text: str) -> list[str]:
     """Split on headings/blank lines; drop the synthetic banner line."""
