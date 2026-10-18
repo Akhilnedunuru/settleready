@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Secrets — NEVER commit .env
+.env
+
+# Runtime-generated data (recreated by scripts/seed.sh + build_index.sh)
+data/
+!.gitkeep
+
+# Streamlit / misc
+.streamlit/
+.DS_Store
+.ipynb_checkpoints/
+
+# Editor
+.vscode/
+.idea/
