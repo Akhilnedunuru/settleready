@@ -25,7 +25,7 @@ import re
 import time
 
 from settleready.memory.blackboard import CaseBlackboard
-from settleready.tools.email_client import EmailRecord, MockEmailClient
+from settleready.tools.email_client import EmailRecord, get_email_client
 
 CASE_ID_RE = re.compile(r"TL-\d{4}-\d+")
 REWORK_STAGES = ("needs_info", "analyst_rework")  # waiting on the customer/analyst
@@ -54,9 +54,11 @@ class IntakeWatcher:
     """Polls the inbox and fires the pipeline. `run_fn` is injectable for tests."""
 
     def __init__(self, data_dir: str = "data", run_fn=None,
-                 mail: MockEmailClient | None = None) -> None:
+                 mail=None) -> None:
         self._data_dir = data_dir
-        self._mail = mail or MockEmailClient(data_dir=data_dir)
+        # Transport comes from the factory: mock JSON by default, real IMAP/SMTP
+        # when SETTLEREADY_EMAIL_SOURCE=gmail. Tests may pass their own client.
+        self._mail = mail or get_email_client(data_dir=data_dir)
         if run_fn is None:
             from settleready.pipeline import run_case
 
@@ -108,13 +110,38 @@ class IntakeWatcher:
         if route_claim(email) != "total_loss" or not case_id:
             return {"email": email.id, "action": "routed_other",
                     "detail": f"subject={email.subject!r}"}
+        # Real-world step: persist the email's PDF attachments as the case's
+        # documents before the pipeline runs. (The mock's demo emails carry no
+        # attachments; their PDFs come from scripts/seed.sh.)
+        saved = self._save_attachments(email, case_id)
         pdf_dir = os.path.join(self._data_dir, "pdfs", case_id)
         if not os.path.isdir(pdf_dir):
             return {"email": email.id, "action": "no_documents",
                     "detail": f"no PDFs for {case_id} yet"}
         summary = self._run_fn(case_id)
         return {"email": email.id, "action": "pipeline_triggered",
-                "case_id": case_id, "routed": summary.get("next")}
+                "case_id": case_id, "routed": summary.get("next"),
+                "attachments_saved": saved}
+
+    def _save_attachments(self, email: EmailRecord, case_id: str) -> list[str]:
+        """Decode the email's PDF attachments into data/pdfs/<case_id>/.
+
+        Returns the saved filenames. Non-PDF attachments are ignored for now.
+        """
+        import base64
+
+        saved = []
+        for att in email.attachments or []:
+            filename = att.get("filename", "")
+            if not filename.lower().endswith(".pdf"):
+                continue
+            safe = os.path.basename(filename)  # no path traversal from mail
+            pdf_dir = os.path.join(self._data_dir, "pdfs", case_id)
+            os.makedirs(pdf_dir, exist_ok=True)
+            with open(os.path.join(pdf_dir, safe), "wb") as f:
+                f.write(base64.b64decode(att["content_b64"]))
+            saved.append(safe)
+        return saved
 
     def _handle_reply(self, email: EmailRecord, bb: CaseBlackboard) -> dict:
         case_id = extract_case_id(email)

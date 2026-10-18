@@ -41,6 +41,29 @@ export PYTHONPATH="$PWD/src"
 streamlit run src/settleready/ui/app.py   # demo + analyst review UI
 ```
 
+## Real-world email intake (no "Run" button)
+
+The intake watcher polls the inbox and fires the pipeline automatically when a
+claim email arrives. The mock JSON inbox is the default; set
+`SETTLEREADY_EMAIL_SOURCE=gmail` (+ `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` in
+`.env`) to process real emails via IMAP/SMTP — free, stdlib only, no new
+dependencies. Either way the agents only ever see the `EmailClient` protocol.
+
+```bash
+export PYTHONPATH="$PWD/src"
+# terminal 1: the daemon (polls every 15s)
+.venv/bin/python -m settleready.agents.intake watch
+# terminal 2: simulate a claim email arriving (demo transport)
+.venv/bin/python -m settleready.agents.intake demo-claim --case-id TL-2026-1045
+# single poll (no daemon)
+.venv/bin/python -m settleready.agents.intake once
+```
+
+Email contract: the subject must contain the case ID (`TL-2026-1045`); customer
+replies must start with `Re:` and carry the case ID so they're correlated to the
+open case. PDF attachments are saved to `data/pdfs/<case_id>/` before the
+pipeline runs.
+
 ## Repository layout
 
 ```

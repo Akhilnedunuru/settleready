@@ -28,7 +28,7 @@ from settleready.agents.reviewer import MAX_RETURNS, REASON_CODES, submit_review
 from settleready.memory.blackboard import CaseBlackboard
 from settleready.memory.tally import ReturnTallyStore
 from settleready.pipeline import run_case
-from settleready.tools.email_client import MockEmailClient
+from settleready.tools.email_client import get_email_client
 
 
 def _cases() -> list[dict]:
@@ -148,14 +148,18 @@ def tab_emails():
                    f"run `python -m settleready.agents.intake watch` to trigger the pipeline automatically.")
     except Exception:  # noqa: BLE001
         pass
-    mail = MockEmailClient(data_dir=DATA_DIR)
+    from settleready.tools.email_client import get_email_client
+    mail = get_email_client(data_dir=DATA_DIR)
     inbox = mail.poll_inbox()
     if not inbox:
         st.info("Inbox is empty — run scripts/seed.sh to seed the demo claim email.")
     for e in inbox:
         with st.expander(f"{e.subject} — from {e.from_}"):
             st.write(e.body)
-    if st.button("✉ Simulate customer reply"):
+            if e.attachments:
+                st.caption("attachments: " + ", ".join(a["filename"] for a in e.attachments))
+    # Demo transport only: with real Gmail, replies arrive as real emails.
+    if hasattr(mail, "inject_inbound") and st.button("✉ Simulate customer reply"):
         mail.inject_inbound(
             to="claims@demo.local", from_="customer@example.com",
             subject=f"Re: claim documents — {_selected()}",

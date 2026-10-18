@@ -100,3 +100,69 @@ def test_reply_to_unknown_case_logged_not_crashed(tmp_path):
     actions = w.poll_once()
     assert actions[0]["action"] == "reply_uncorrelated"
     assert calls == []
+
+
+# -- real-email pieces ------------------------------------------------------------
+def _mime_bytes():
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["From"] = "customer@example.com"
+    m["To"] = "claims@demo.local"
+    m["Subject"] = "Claim filed via mobile app — TL-2026-1045"
+    m["Message-ID"] = "<abc123@mail.example.com>"
+    m.set_content("Please find my claim documents attached.")
+    m.add_attachment(b"%PDF-1.4 fake", maintype="application", subtype="pdf",
+                     filename="claim_form.pdf")
+    return m.as_bytes()
+
+
+def test_imap_mime_parsing():
+    import email as _email
+    from settleready.tools.imap_client import ImapEmailClient
+    client = ImapEmailClient.__new__(ImapEmailClient)  # no network, no creds needed
+    rec = client._to_record(_email.message_from_bytes(_mime_bytes()))
+    assert rec.id == "abc123@mail.example.com"
+    assert rec.subject == "Claim filed via mobile app — TL-2026-1045"
+    assert "claim documents" in rec.body
+    assert len(rec.attachments) == 1
+    assert rec.attachments[0]["filename"] == "claim_form.pdf"
+    import base64
+    assert base64.b64decode(rec.attachments[0]["content_b64"]) == b"%PDF-1.4 fake"
+
+
+def test_get_email_client_factory(monkeypatch):
+    import os
+    from settleready.tools.email_client import MockEmailClient, get_email_client
+    from settleready.tools.imap_client import ImapEmailClient
+    monkeypatch.delenv("SETTLEREADY_EMAIL_SOURCE", raising=False)
+    assert isinstance(get_email_client(data_dir="/tmp"), MockEmailClient)
+    monkeypatch.setenv("SETTLEREADY_EMAIL_SOURCE", "gmail")
+    monkeypatch.setenv("GMAIL_ADDRESS", "demo@gmail.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "abcd efgh")
+    c = get_email_client(data_dir="/tmp")
+    assert isinstance(c, ImapEmailClient)
+    assert c._password == "abcdefgh"  # spaces stripped
+
+
+def test_watcher_saves_pdf_attachments(tmp_path):
+    import base64
+    calls = []
+    mail = MockEmailClient(data_dir=str(tmp_path))
+    rec = mail.inject_inbound(to="claims@demo.local", from_="c@example.com",
+                              subject="Claim filed via mobile app — TL-2026-1045",
+                              body="docs attached")
+    # attach a PDF to the stored record (demo transport carries none)
+    import json
+    from dataclasses import asdict
+    recs = mail.poll_inbox()
+    recs[0].attachments = [{"filename": "claim_form.pdf",
+                             "content_b64": base64.b64encode(b"%PDF-1.4 fake").decode()}]
+    with open(tmp_path / "inbox.json", "w") as f:
+        json.dump([asdict(r) for r in recs], f)
+    w = IntakeWatcher(data_dir=str(tmp_path),
+                      run_fn=lambda cid: calls.append(cid) or {"next": "ready_for_review"})
+    actions = w.poll_once()
+    assert actions[0]["action"] == "pipeline_triggered"
+    assert actions[0]["attachments_saved"] == ["claim_form.pdf"]
+    assert (tmp_path / "pdfs" / "TL-2026-1045" / "claim_form.pdf").exists()
+    assert calls == ["TL-2026-1045"]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -24,6 +24,8 @@ class EmailRecord:
     body: str
     ts: str
     direction: str  # "inbound" | "outbound"
+    # [{"filename": str, "content_b64": str}] — base64 so the mock stays JSON-serializable
+    attachments: list = field(default_factory=list)
 
 
 class EmailClient(Protocol):
@@ -73,8 +75,7 @@ class MockEmailClient:
 
     # -- internals ----------------------------------------------------------
     @staticmethod
-    def _new(*, to: str, from_: str, subject: str, body: str, direction: str) -> EmailRecord:
-        return EmailRecord(
+    def _new(*, to: str, from_: str, subject: str, body: str, direction: str) -> EmailRecord:        return EmailRecord(
             id=uuid.uuid4().hex[:8],
             to=to,
             from_=from_,
@@ -95,3 +96,15 @@ class MockEmailClient:
         recs.append(rec)
         with open(path, "w") as f:
             json.dump([asdict(r) for r in recs], f, indent=2)
+
+
+def get_email_client(data_dir: str = "data") -> "EmailClient":
+    """Factory: real IMAP/SMTP when SETTLEREADY_EMAIL_SOURCE=gmail, else the mock.
+
+    The watcher and UI only ever talk to the EmailClient protocol, so flipping
+    the env var swaps the transport with zero agent-code changes.
+    """
+    if os.environ.get("SETTLEREADY_EMAIL_SOURCE", "mock").lower() == "gmail":
+        from settleready.tools.imap_client import ImapEmailClient
+        return ImapEmailClient()
+    return MockEmailClient(data_dir=data_dir)
