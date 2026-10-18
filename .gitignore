@@ -8,8 +8,10 @@ venv/
 # Secrets — NEVER commit .env
 .env
 
-# Runtime-generated data (recreated by scripts/seed.sh + build_index.sh)
-data/
+# Runtime-generated data (recreated by scripts/seed.sh + build_index.sh).
+# NOTE: anchored with leading slash — a bare `data/` would also ignore
+# src/settleready/data/ (the fixture *generator* package), which must be committed.
+/data/
 !.gitkeep
 
 # Streamlit / misc
