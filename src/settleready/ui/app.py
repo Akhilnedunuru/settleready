@@ -92,10 +92,11 @@ def tab_packet():
                  f"(returns: {packet['return_count']}/{MAX_RETURNS})")
 
     st.markdown("**Extracted fields**")
-    rows = [{"field": f, "value": v.get("value"), "confidence": v.get("confidence"),
+    # str() the values: the column mixes str/int/bool, which pyarrow can't serialize
+    rows = [{"field": f, "value": str(v.get("value")), "confidence": v.get("confidence"),
              "source": v.get("source", "")}
             for f, v in packet["fields"].items()]
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
     if packet["extraction_flags"]:
         st.warning(f"Below confidence threshold: {packet['extraction_flags']}")
 
@@ -203,14 +204,14 @@ def tab_audit():
     else:
         st.dataframe([{"time": e["ts"], "stage": e["stage"], "event": e["event"],
                        "details": json.dumps(e["details"])}
-                      for e in log], use_container_width=True)
+                      for e in log], width="stretch")
 
     st.subheader("Return tally (episodic memory)")
     tally = ReturnTallyStore(os.path.join(DATA_DIR, "tally.db"))
     rows = tally.tallies()
     tally.close()
     if rows:
-        st.dataframe(rows, use_container_width=True)
+        st.dataframe(rows, width="stretch")
         st.caption(f"Promotion threshold: 3 returns → mandatory upfront verification. "
                    f"Promoted rows run before the verify fan-out on future cases.")
     else:
