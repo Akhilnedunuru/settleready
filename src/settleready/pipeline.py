@@ -48,6 +48,7 @@ def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
     n_ok = sum(1 for v in extraction["fields"].values() if v["confidence"] >= 0.8)
     summary["stages"].append(
         f"extraction: {n_ok} fields at confidence>=0.8, flags={extraction['flags']}")
+    summary["trace"] = extraction["trace"]  # ReAct Thought->Action->Observation steps
 
     # -- verification: fan-out ----------------------------------------------
     bb.set_stage(case_id, "verification")
@@ -100,12 +101,20 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Run the SettleReady pipeline for one case")
     p.add_argument("--case-id", default="TL-2026-1043")
     p.add_argument("--data", default="data")
+    p.add_argument("--show-trace", action="store_true",
+                   help="print the ReAct Thought->Action->Observation trace")
     a = p.parse_args()
 
     out = run_case(a.case_id, data_dir=a.data)
     print(f"\nCase {out['case_id']} -> {out['next']}")
     for s in out["stages"]:
         print(f"  {s}")
+    if a.show_trace:
+        print("  ReAct trace:")
+        for t in out.get("trace", []):
+            print(f"    THOUGHT: {t['thought']}")
+            print(f"    ACTION : {t['action']}")
+            print(f"    OBS    : {t['observation']}\n")
     print("  audit:")
     for e in out["audit"]:
         print(f"    {e['ts']} [{e['stage']}] {e['event']}")
