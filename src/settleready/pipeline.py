@@ -1,5 +1,5 @@
-"""Pipeline: intake -> extract -> verify -> blackboard (modules 1-3 live here;
-RAG / compute / review loop arrive in modules 4-5).
+"""Pipeline: intake -> extract -> verify -> research -> compute -> blackboard
+(modules 1-4 live here; the human review loop arrives in module 5).
 
 Each stage reads and writes the Case Blackboard — the contract between stages.
 Run:  PYTHONPATH=src python -m settleready.pipeline --case-id TL-2026-1043 --data data
@@ -10,8 +10,11 @@ import glob
 import os
 
 from settleready.agents.extraction import extract_fields
+from settleready.agents.researcher import research
 from settleready.agents.verification import verify_case
 from settleready.memory.blackboard import CaseBlackboard
+from settleready.tools.acv import compute_acv
+from settleready.tools.mock_dbs import MockValuationService
 from settleready.tools.pdf_parser import parse_document
 
 
@@ -55,10 +58,36 @@ def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
         f"conflicts={[c['reason_code'] for c in report['conflicts']]}, flags={report['flags']}")
 
     # -- routing ---------------------------------------------------------------
-    next_stage = "ready_for_review" if report["passed"] else "needs_info"
-    bb.set_stage(case_id, next_stage, event="routed",
-                 details={"passed": report["passed"],
-                          "conflicts": [c["reason_code"] for c in report["conflicts"]]})
+    if not report["passed"]:
+        next_stage = "needs_info"
+        bb.set_stage(case_id, next_stage, event="routed",
+                     details={"passed": False,
+                              "conflicts": [c["reason_code"] for c in report["conflicts"]]})
+        summary["next"] = next_stage
+        summary["audit"] = bb.audit_log(case_id)
+        bb.close()
+        return summary
+
+    # -- research: state law for this title state --------------------------------
+    bb.set_stage(case_id, "research")
+    title_state = (extraction["fields"].get("title_state") or {}).get("value", "")
+    legal = research("What is the total loss threshold and valuation method?",
+                     title_state, data_dir=data_dir, provider=provider)
+    bb.write(case_id, "legal_research", legal)
+    summary["stages"].append(
+        f"research: {title_state} threshold answered with citations {legal['citations']}")
+
+    # -- compute: deterministic ACV (money math never via LLM) -------------------
+    bb.set_stage(case_id, "compute")
+    fields = extraction["fields"]
+    comps = MockValuationService(data_dir).comparables(case_id)
+    mileage = (fields.get("mileage") or {}).get("value") or 0
+    acv, worksheet = compute_acv(comparables=comps, mileage=mileage)
+    bb.write(case_id, "acv", {"acv": acv, "worksheet": worksheet})
+    summary["stages"].append(f"compute: ACV=${acv:,} ({worksheet['formula']})")
+
+    next_stage = "ready_for_review"
+    bb.set_stage(case_id, next_stage, event="routed", details={"acv": acv})
     summary["next"] = next_stage
     summary["audit"] = bb.audit_log(case_id)
     bb.close()
