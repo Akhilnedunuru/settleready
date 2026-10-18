@@ -141,6 +141,13 @@ def tab_packet():
 
 def tab_emails():
     st.header("Emails")
+    try:
+        from settleready.agents.intake import IntakeWatcher
+        st.caption(f"📡 Intake watcher: "
+                   f"{IntakeWatcher(data_dir=DATA_DIR).status()['seen_count']} emails processed — "
+                   f"run `python -m settleready.agents.intake watch` to trigger the pipeline automatically.")
+    except Exception:  # noqa: BLE001
+        pass
     mail = MockEmailClient(data_dir=DATA_DIR)
     inbox = mail.poll_inbox()
     if not inbox:
