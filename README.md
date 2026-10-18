@@ -31,10 +31,13 @@ cd settleready
 ./scripts/setup.sh          # checks Python 3.11, creates venv, installs deps
 cp .env.example .env        # paste your OPENAI_API_KEY (LangSmith key optional)
 
-python scripts/smoke_test.py  # verifies LLM + embeddings work (~$0.01)
+.venv/bin/python scripts/smoke_test.py  # verifies LLM + embeddings work (~$0.01)
 ./scripts/seed.sh             # generates synthetic fixtures (deterministic)
 ./scripts/build_index.sh      # builds the local Chroma RAG index
 
+export PYTHONPATH="$PWD/src"
+.venv/bin/python -m settleready.pipeline --case-id TL-2026-1044   # full pipeline, one case
+.venv/bin/python -m settleready.eval.metrics                     # scores vs. fixture ground truth
 streamlit run src/settleready/ui/app.py   # demo + analyst review UI
 ```
 
