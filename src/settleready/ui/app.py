@@ -15,7 +15,9 @@ import json
 import os
 import sys
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+APP_DIR = os.path.dirname(os.path.abspath(__file__))  # .../src/settleready/ui
+# ui -> settleready -> src -> repo root (three levels up from APP_DIR)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(APP_DIR)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 DATA_DIR = os.path.join(REPO_ROOT, "data")
 
