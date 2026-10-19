@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command environment setup for SettleReady.
-# Usage: ./scripts/setup.sh
+# Usage: bash scripts/setup.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -29,4 +29,4 @@ echo ""
 echo "Done. Next steps:"
 echo "  1. cp .env.example .env   # then paste your OPENAI_API_KEY"
 echo "  2. .venv/bin/python scripts/smoke_test.py"
-echo "  3. ./scripts/seed.sh && ./scripts/build_index.sh"
+echo "  3. bash scripts/seed.sh && bash scripts/build_index.sh"

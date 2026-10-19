@@ -63,7 +63,7 @@ def case_picker() -> None:
     if not ids:
         st.info("📭 No cases yet — the intake watcher creates one automatically "
                 "when a claim email arrives.\n\n"
-                "Run `./scripts/start.sh`, then send a claim email "
+                "Run `bash scripts/start.sh`, then send a claim email "
                 "whose subject contains the case ID (e.g. `TL-2026-1045`) with the claim "
                 "PDFs attached.")
         return
@@ -296,7 +296,7 @@ def main() -> None:
     st.caption("Synthetic demo data only. The agent prepares; the senior analyst decides.")
 
     if not os.path.exists(os.path.join(DATA_DIR, "statutes")):
-        st.error("No environment found — run ./scripts/fresh.sh (or ./scripts/seed.sh) first.")
+        st.error("No environment found — run bash scripts/fresh.sh (or bash scripts/seed.sh) first.")
         return
 
     case_picker()  # global, always visible above the tabs, auto-refreshes

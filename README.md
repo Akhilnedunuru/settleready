@@ -28,7 +28,7 @@ Full detail: [`docs/architecture.md`](docs/architecture.md).
 git clone https://github.com/Akhilnedunuru/settleready.git
 cd settleready
 
-./scripts/setup.sh          # checks Python 3.11, creates venv, installs deps
+bash scripts/setup.sh          # checks Python 3.11, creates venv, installs deps
 cp .env.example .env        # paste your OPENAI_API_KEY (LangSmith key optional)
 
 .venv/bin/python scripts/smoke_test.py  # verifies LLM + embeddings work (~$0.01)
@@ -41,9 +41,9 @@ corpus + mock title/lien/CLUE/valuation records). The app boots empty; cases are
 created by the intake watcher as claim emails arrive.
 
 ```bash
-./scripts/fresh.sh            # environment only, no demo fixtures
-./scripts/build_index.sh      # builds the local Chroma RAG index
-./scripts/start.sh            # single terminal: watcher daemon + Streamlit UI (Ctrl-C stops both)
+bash scripts/fresh.sh            # environment only, no demo fixtures
+bash scripts/build_index.sh      # builds the local Chroma RAG index
+bash scripts/start.sh            # single terminal: watcher daemon + Streamlit UI (Ctrl-C stops both)
 # then send a claim email (subject contains the case ID, claim PDFs attached)
 ```
 (Or run the two processes in separate terminals: `python -m settleready.agents.intake watch`
@@ -53,15 +53,15 @@ and `streamlit run src/settleready/ui/app.py`.)
 cases with ground truth, a seeded inbox email, and seeded return-tally history.
 
 ```bash
-./scripts/seed.sh             # generates synthetic fixtures (deterministic)
-./scripts/build_index.sh      # builds the local Chroma RAG index
+bash scripts/seed.sh             # generates synthetic fixtures (deterministic)
+bash scripts/build_index.sh      # builds the local Chroma RAG index
 
 export PYTHONPATH="$PWD/src"
 .venv/bin/python -m settleready.pipeline --case-id TL-2026-1044   # full pipeline, one case
 .venv/bin/python -m settleready.eval.metrics                     # scores vs. fixture ground truth
 streamlit run src/settleready/ui/app.py   # analyst workbench
 ```
-(`./scripts/fresh.sh` wipes back to the empty state at any time.)
+(`bash scripts/fresh.sh` wipes back to the empty state at any time.)
 
 ## Real-world email intake (no "Run" button)
 
