@@ -78,6 +78,13 @@ def submit_review(case_id: str, decision: str, reason_code: str | None = None,
     bb.write(case_id, "return_count", returns)
     bb.write(case_id, "last_return", {"reason_code": reason_code, "note": note,
                                       "promoted": promoted})
+    # Customer-actionable returns go back to the claimant as a targeted
+    # follow-up (the analyst's job); internal ones (e.g. WEAK_COMPS) don't.
+    from settleready.agents.outreach import maybe_send_info_request, needs_from_return
+    holder = (fields.get("holder_name") or {}).get("value", "")
+    outreach = maybe_send_info_request(
+        data_dir, case_id, needs_from_return(reason_code, note),
+        holder_name=holder or "")
     if returns >= MAX_RETURNS:
         bb.set_stage(case_id, "escalated", event="reviewer_returned",
                      details={"reason_code": reason_code, "note": note,
@@ -92,7 +99,7 @@ def submit_review(case_id: str, decision: str, reason_code: str | None = None,
     bb.close()
     return {"decision": "return", "stage": stage, "return_count": returns,
             "promoted": promoted, "promotion_detail": promotion_detail,
-            "tally": tally_rows}
+            "outreach": outreach, "tally": tally_rows}
 
 
 if __name__ == "__main__":

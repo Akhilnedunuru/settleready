@@ -147,6 +147,13 @@ class IntakeWatcher:
                     {"from": email.from_, "subject": email.subject,
                      "attachments": len(email.attachments or []),
                      "body": (email.body or "")[:400]})
+        # Remember who to ask when the analyst stage needs follow-up info.
+        from settleready.memory.blackboard import CaseBlackboard
+        _bb = CaseBlackboard(os.path.join(self._data_dir, "blackboard.db"))
+        try:
+            _bb.write(case_id, "claimant_email", email.from_)
+        finally:
+            _bb.close()
         # One automatic trigger per case ID — duplicate claim emails don't
         # re-fire the pipeline (manual re-runs go through the Review tab).
         if case_id in self._load_state()["cases_triggered"]:

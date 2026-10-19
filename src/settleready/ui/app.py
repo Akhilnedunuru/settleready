@@ -103,6 +103,13 @@ def _render_event(ev: dict) -> None:
         st.write(f"`{ts}` → stage `{d.get('stage')}`")
     elif e == "email_received":
         st.write(f"`{ts}` 📧 {d.get('subject')} — from {d.get('from')}")
+    elif e == "email_sent":
+        with st.expander(f"`{ts}` 📤 info request sent to {d.get('to')}", expanded=False):
+            st.write(f"**Subject:** {d.get('subject')}")
+            for n in d.get("needs", []):
+                st.write(f"- {n}")
+    elif e in ("email_skipped", "email_failed"):
+        st.write(f"`{ts}` 📪 outreach {e.split('_')[1]}: {d.get('reason', d.get('error'))}")
     elif e == "pipeline_started":
         st.write(f"`{ts}` ▶ pipeline started")
     elif e == "pipeline_finished":
@@ -304,6 +311,19 @@ def tab_packet():
             st.write(f"`{s['amount']:+7d}` {s['name']} — {s['detail']}")
     else:
         st.write("_not computed_")
+
+    st.markdown("**Customer outreach**")
+    sent = [ev for ev in events.tail(DATA_DIR, case_id=packet["case_id"], limit=200)
+            if ev["event"] == "email_sent"]
+    if not sent:
+        st.write("_no info-request emails sent yet_")
+    for ev in sent:
+        d = ev["detail"]
+        with st.expander(f"📤 {ev['ts']} → {d.get('to')}", expanded=False):
+            st.write(f"**Subject:** {d.get('subject')}")
+            for n in d.get("needs", []):
+                st.write(f"- {n}")
+            st.caption("The customer's reply (same subject) re-triggers the pipeline via the watcher.")
 
 
 @st.fragment(run_every=2)

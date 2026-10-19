@@ -10,6 +10,7 @@ import glob
 import os
 
 from settleready.agents.extraction import extract_fields
+from settleready.agents.outreach import maybe_send_info_request, needs_from_report
 from settleready.agents.researcher import research
 from settleready.agents.verification import verify_case
 from settleready.memory.blackboard import CaseBlackboard
@@ -116,6 +117,14 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
         bb.set_stage(case_id, next_stage, event="routed",
                      details={"passed": False,
                               "conflicts": [c["reason_code"] for c in report["conflicts"]]})
+        # Analyst agent's targeted follow-up (checkpoint-1 workflow): ask the
+        # claimant for exactly what's missing. Deduplicated per need-set, so
+        # re-runs don't re-send. The customer's reply re-triggers the pipeline
+        # via the intake watcher, closing the loop.
+        holder = (extraction["fields"].get("holder_name") or {}).get("value", "")
+        outreach = maybe_send_info_request(
+            data_dir, case_id, needs_from_report(report), holder_name=holder or "")
+        summary["outreach"] = outreach
         summary["next"] = next_stage
         summary["audit"] = bb.audit_log(case_id)
         return summary
