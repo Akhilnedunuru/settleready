@@ -318,11 +318,16 @@ def _checkbox(styles: dict, checked: bool):
 
 
 def _yn_field(styles: dict, label: str, is_yes: bool, width_in: float):
-    """Yes/No field rendered as real checkboxes."""
+    """Yes/No field rendered as real checkboxes, label BEFORE its box.
+
+    The [X] mark therefore text-extracts immediately AFTER the option it
+    selects ("YES NO X" == NO selected) instead of floating ambiguously
+    between the two labels ("YES X NO").
+    """
     opts = Table([
-        [_checkbox(styles, is_yes), Paragraph("YES", styles["cblab"]),
-         _checkbox(styles, not is_yes), Paragraph("NO", styles["cblab"])],
-    ], colWidths=[0.24 * inch, 0.45 * inch, 0.24 * inch, 0.45 * inch])
+        [Paragraph("YES", styles["cblab"]), _checkbox(styles, is_yes),
+         Paragraph("NO", styles["cblab"]), _checkbox(styles, not is_yes)],
+    ], colWidths=[0.45 * inch, 0.24 * inch, 0.45 * inch, 0.24 * inch])
     opts.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                               ("LEFTPADDING", (0, 0), (-1, -1), 2)]))
     inner = Table([

@@ -28,6 +28,8 @@ and "span" (the exact short quote from the text supporting the value, or "").
 Be conservative: when unsure, lower the confidence instead of guessing.
 Types: mileage is an integer (no commas); lien_declared is true/false/null;
 everything else is a string or null.
+Yes/No checkboxes render as "YES [ ] NO [X]" in the text: the [X] mark belongs
+to the option immediately BEFORE it ("YES NO X" means NO is selected).
 Respond with ONLY valid JSON, exactly:
 {"fields": {"<field>": {"value": ..., "confidence": ..., "span": ...}}}"""
 
