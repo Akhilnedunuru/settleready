@@ -43,7 +43,13 @@ class OpenAIProvider:
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key or api_key.startswith("sk-paste"):
             raise RuntimeError("OPENAI_API_KEY is not set — copy .env.example to .env first.")
-        self._client = OpenAI(api_key=api_key)
+        self._client = OpenAI(
+            api_key=api_key,
+            # The library default is 600s per request: a stalled network call
+            # would hang the watcher with zero output. Fail fast instead —
+            # extraction records LLM errors in its trace; the watcher logs the
+            # failure and keeps polling.
+            timeout=60, max_retries=2)
         self.chat_model = os.environ.get("SETTLEREADY_CHAT_MODEL", "gpt-4o-mini")
         self.embed_model = os.environ.get("SETTLEREADY_EMBED_MODEL", "text-embedding-3-small")
 

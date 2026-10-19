@@ -248,7 +248,7 @@ def test_poll_inbox_downloads_only_claim_emails(monkeypatch):
             return ("OK", [(b"full", full)])
         def logout(self): pass
 
-    monkeypatch.setattr(imaplib, "IMAP4_SSL", lambda host: StubIMAP())
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", lambda host, **kw: StubIMAP())
     client = ImapEmailClient(address="d@g.com", app_password="x")
     recs = client.poll_inbox()
     assert [r.subject for r in recs] == ["Claim filed via mobile app — TL-2026-1045"]

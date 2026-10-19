@@ -171,7 +171,11 @@ class IntakeWatcher:
             return {"email": email.id, "action": "no_documents",
                     "detail": f"no PDFs for {case_id} yet"}
         try:
+            print(f"[{_ts()}] pipeline start {case_id} …", flush=True)
+            t0 = time.time()
             summary = self._run_fn(case_id)
+            print(f"[{_ts()}] pipeline done {case_id} -> {summary.get('next')} "
+                  f"({time.time() - t0:.0f}s)", flush=True)
         except Exception as e:  # noqa: BLE001 — a daemon must not die on one bad case
             return {"email": email.id, "action": "pipeline_failed",
                     "case_id": case_id, "detail": str(e)[:200]}
@@ -222,7 +226,11 @@ class IntakeWatcher:
                      "body_len": len(email.body or "")})
         if case["stage"] in REWORK_STAGES:
             try:
+                print(f"[{_ts()}] pipeline start {case_id} (customer reply) …", flush=True)
+                t0 = time.time()
                 summary = self._run_fn(case_id)
+                print(f"[{_ts()}] pipeline done {case_id} -> {summary.get('next')} "
+                      f"({time.time() - t0:.0f}s)", flush=True)
             except Exception as e:  # noqa: BLE001 — a daemon must not die on one bad case
                 return {"email": email.id, "action": "pipeline_failed",
                         "case_id": case_id, "detail": str(e)[:200]}
