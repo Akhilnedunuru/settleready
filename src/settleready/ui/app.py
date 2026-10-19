@@ -52,18 +52,35 @@ def _selected() -> str | None:
 
 
 def _need_case() -> str | None:
-    """Tab guard: show the empty state when no cases exist yet."""
-    case_id = _selected()
-    if case_id is None:
+    """Tab guard: None when no cases exist yet (the picker owns the empty state)."""
+    return _selected()
+
+
+@st.fragment(run_every=15)
+def case_picker() -> None:
+    """Global case picker, always visible above the tabs, refreshed live."""
+    ids = _case_ids()
+    if not ids:
         st.info("📭 No cases yet — the intake watcher creates one automatically "
                 "when a claim email arrives.\n\n"
-                "Run `python -m settleready.agents.intake watch`, then send a claim email "
+                "Run `./scripts/start.sh`, then send a claim email "
                 "whose subject contains the case ID (e.g. `TL-2026-1045`) with the claim "
                 "PDFs attached.")
-    return case_id
+        return
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.selectbox("Case", ids, key="case_id")
+    with col2:
+        st.caption("↑ switch cases — every tab below follows this selection.")
 
 
 # ------------------------------------------------------------------ tabs ---
+# Packet/Review/Audit/Emails auto-refresh every 15s via st.fragment, so the UI
+# follows the watcher daemon live — no manual refresh needed. Widget state
+# (case picker, buttons) survives fragment reruns.
+
+
+@st.fragment(run_every=15)
 def tab_emails():
     st.header("Emails — intake")
     st.caption("Claim emails arrive here. The intake watcher "
@@ -109,11 +126,13 @@ def tab_emails():
         st.rerun()
 
 
+@st.fragment(run_every=15)
 def tab_packet():
     st.header("Case packet")
     case_id = _need_case()
     if case_id is None:
         return
+    st.caption("Auto-refreshes every 15s — follows the watcher live.")
     try:
         packet = build_packet(case_id, data_dir=DATA_DIR)
     except ValueError as e:
@@ -181,6 +200,7 @@ def tab_packet():
         st.write("_not computed_")
 
 
+@st.fragment(run_every=15)
 def tab_review():
     st.header("Senior analyst review")
     case_id = _need_case()
@@ -198,6 +218,15 @@ def tab_review():
         for cf in packet["verification"]["conflicts"]:
             st.error(f"{cf['reason_code']}: {cf['detail']}")
 
+    # Terminal states: nothing left to decide here.
+    if packet["stage"] == "approved":
+        st.success("✅ Approved — the case is complete. No further action needed.")
+        return
+    if packet["stage"] == "escalated":
+        st.error("⬆️ Escalated to a human — the return budget is exhausted. "
+                 "No further action in the UI.")
+        return
+
     if st.button("↻ Re-run analyst pipeline (rework)"):
         with st.spinner("Re-running intake → extract → verify → research → compute…"):
             try:
@@ -207,6 +236,9 @@ def tab_review():
                 return
         st.success(f"Routed → **{out['next']}**")
         st.rerun()
+    st.caption("Re-run re-executes the full pipeline on the current documents — use it "
+               "after the customer sends missing files. It does not reset the return "
+               "count or change a review decision.")
 
     note = st.text_input("Reviewer note", "")
     col1, col2 = st.columns(2)
@@ -228,11 +260,13 @@ def tab_review():
                          "The loop stops here by design.")
 
 
+@st.fragment(run_every=15)
 def tab_audit():
     st.header("Audit trail")
     case_id = _need_case()
     if case_id is None:
         return
+    st.caption("Auto-refreshes every 15s — follows the watcher live.")
     bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
     log = bb.audit_log(case_id)
     bb.close()
@@ -265,13 +299,7 @@ def main() -> None:
         st.error("No environment found — run ./scripts/fresh.sh (or ./scripts/seed.sh) first.")
         return
 
-    st.sidebar.header("Case")
-    ids = _case_ids()
-    if ids:
-        st.sidebar.selectbox("Select case", ids, key="case_id")
-    else:
-        st.sidebar.caption("No cases yet — they appear here when claim emails arrive.")
-    st.sidebar.caption("Cases are created by the intake watcher when claim emails arrive.")
+    case_picker()  # global, always visible above the tabs, auto-refreshes
 
     tabs = st.tabs(["Emails", "Packet", "Review", "Audit trail"])
     with tabs[0]:
