@@ -1,9 +1,11 @@
-"""Streamlit demo + analyst review UI (module 5).
+"""Streamlit analyst workbench (module 5).
 
-Tabs:
-  Run case      pipeline execution with live ReAct trace (Thought -> Action -> Observation)
+The pipeline is triggered by the intake watcher (email arrival), not by this
+UI — the workbench is where the senior analyst reviews what the agent prepared.
+
+Tabs, in process order:
+  Emails        inbox threads + intake watcher status
   Packet        assembled case file: fields, verification, cited legal note, ACV worksheet
-  Emails        inbox threads (MockEmailClient) + "Simulate customer reply"
   Review        approve / return-with-reason-codes (feeds the return tally store)
   Audit trail   every stage transition + the return tally table
 
@@ -31,13 +33,9 @@ from settleready.pipeline import run_case
 from settleready.tools.email_client import get_email_client
 
 
-def _cases() -> list[dict]:
-    with open(os.path.join(DATA_DIR, "cases.json")) as f:
-        return json.load(f)
-
-
 def _case_ids() -> list[str]:
-    return [c["case_id"] for c in _cases()]
+    with open(os.path.join(DATA_DIR, "cases.json")) as f:
+        return [c["case_id"] for c in json.load(f)]
 
 
 def _selected() -> str:
@@ -47,108 +45,18 @@ def _selected() -> str:
 
 
 # ------------------------------------------------------------------ tabs ---
-def tab_run():
-    st.header("Run case")
-    case_id = st.selectbox("Case", _case_ids(), key="case_id")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("▶ Run pipeline", type="primary"):
-            with st.spinner(f"Running intake → extract → verify → research → compute for {case_id}…"):
-                try:
-                    out = run_case(case_id, data_dir=DATA_DIR)
-                except Exception as e:  # noqa: BLE001 — surface it in the UI
-                    st.error(f"Pipeline failed: {e}")
-                    return
-            st.session_state["last_run"] = out
-            st.success(f"Routed → **{out['next']}**")
-    with col2:
-        if st.button("↻ Re-run analyst pipeline (rework)"):
-            with st.spinner("Re-running…"):
-                out = run_case(case_id, data_dir=DATA_DIR)
-            st.session_state["last_run"] = out
-            st.success(f"Routed → **{out['next']}**")
-
-    out = st.session_state.get("last_run")
-    if out and out["case_id"] == case_id:
-        for s in out["stages"]:
-            st.write(f"• {s}")
-        with st.expander("ReAct trace (Thought → Action → Observation)"):
-            for t in out.get("trace", []):
-                st.markdown(f"**Thought:** {t['thought']}")
-                st.markdown(f"**Action:** `{t['action']}`")
-                st.markdown(f"**Observation:** {t['observation']}")
-                st.divider()
-
-
-def tab_packet():
-    st.header("Case packet")
-    case_id = _selected()
-    try:
-        packet = build_packet(case_id, data_dir=DATA_DIR)
-    except ValueError as e:
-        st.warning(str(e))
-        return
-    st.subheader(f"{packet['case_id']} — stage: `{packet['stage']}` "
-                 f"(returns: {packet['return_count']}/{MAX_RETURNS})")
-
-    st.markdown("**Extracted fields**")
-    # str() the values: the column mixes str/int/bool, which pyarrow can't serialize
-    rows = [{"field": f, "value": str(v.get("value")), "confidence": v.get("confidence"),
-             "source": v.get("source", "")}
-            for f, v in packet["fields"].items()]
-    st.dataframe(rows, width="stretch")
-    if packet["extraction_flags"]:
-        st.warning(f"Below confidence threshold: {packet['extraction_flags']}")
-
-    st.markdown("**Verification**")
-    for c in packet["verification"].get("checks", []):
-        st.write(f"`{c['status']:8s}` {c['check']}: {c['detail']}")
-    for cf in packet["verification"].get("conflicts", []):
-        st.error(f"CONFLICT {cf['reason_code']}: {cf['detail']}")
-
-    st.markdown("**Legal research**")
-    st.write(packet["legal"]["answer"] or "_not run_")
-    if packet["legal"]["citations"]:
-        st.caption("citations: " + ", ".join(packet["legal"]["citations"]))
-    chunks = packet["legal"].get("chunks", [])
-    with st.expander(f"Retrieved chunks for this case ({len(chunks)})"):
-        if not chunks:
-            st.info("No retrieval trace — run the pipeline's research stage first.")
-        for c in chunks:
-            st.markdown(f"**[{c['state']}/{c['citation']}]** score=`{c['score']}`")
-            st.write(c["text"])
-            st.divider()
-    with st.expander("RAG index contents — what was indexed"):
-        try:
-            from settleready.tools.rag import inspect_index
-            indexed = inspect_index(persist_dir=os.path.join(DATA_DIR, "chroma"))
-            st.write(f"{len(indexed)} chunks in the index")
-            for item in indexed:
-                st.markdown(f"**{item['id']}** [{item['state']}/{item['source']}]")
-                st.caption(item["text"][:220] + "…")
-        except Exception as e:  # noqa: BLE001 — surface it in the UI
-            st.warning(f"Could not read the index: {e}")
-
-    st.markdown("**ACV worksheet**")
-    acv = packet["acv"]
-    if acv:
-        st.metric("Actual cash value", f"${acv['acv']:,}")
-        for s in acv["worksheet"]["steps"]:
-            st.write(f"`{s['amount']:+7d}` {s['name']} — {s['detail']}")
-    else:
-        st.write("_not computed_")
-
-
 def tab_emails():
-    st.header("Emails")
+    st.header("Emails — intake")
+    st.caption("Claim emails arrive here. The intake watcher "
+               "`(python -m settleready.agents.intake watch)` picks them up and fires "
+               "the pipeline automatically — no manual run needed.")
     try:
         from settleready.agents.intake import IntakeWatcher
-        st.caption(f"📡 Intake watcher: "
-                   f"{IntakeWatcher(data_dir=DATA_DIR).status()['seen_count']} emails processed — "
-                   f"run `python -m settleready.agents.intake watch` to trigger the pipeline automatically.")
+        status = IntakeWatcher(data_dir=DATA_DIR).status()
+        st.caption(f"📡 Watcher: {status['seen_count']} emails processed, "
+                   f"{len(status['cases_triggered'])} cases auto-triggered.")
     except Exception:  # noqa: BLE001
         pass
-    from settleready.tools.email_client import get_email_client
     mail = get_email_client(data_dir=DATA_DIR)
     try:
         inbox = mail.poll_inbox()
@@ -177,6 +85,76 @@ def tab_emails():
         st.rerun()
 
 
+def tab_packet():
+    st.header("Case packet")
+    case_id = _selected()
+    try:
+        packet = build_packet(case_id, data_dir=DATA_DIR)
+    except ValueError as e:
+        st.warning(str(e))
+        return
+    st.subheader(f"{packet['case_id']} — stage: `{packet['stage']}` "
+                 f"(returns: {packet['return_count']}/{MAX_RETURNS})")
+
+    st.markdown("**Extracted fields**")
+    # str() the values: the column mixes str/int/bool, which pyarrow can't serialize
+    rows = [{"field": f, "value": str(v.get("value")), "confidence": v.get("confidence"),
+             "source": v.get("source", "")}
+            for f, v in packet["fields"].items()]
+    st.dataframe(rows, width="stretch")
+    if packet["extraction_flags"]:
+        st.warning(f"Below confidence threshold: {packet['extraction_flags']}")
+
+    with st.expander("ReAct trace (Thought → Action → Observation)"):
+        trace = packet.get("trace", [])
+        if not trace:
+            st.info("No trace recorded for this case yet.")
+        for t in trace:
+            st.markdown(f"**Thought:** {t['thought']}")
+            st.markdown(f"**Action:** `{t['action']}`")
+            st.markdown(f"**Observation:** {t['observation']}")
+            st.divider()
+
+    st.markdown("**Verification**")
+    for c in packet["verification"].get("checks", []):
+        st.write(f"`{c['status']:8s}` {c['check']}: {c['detail']}")
+    for cf in packet["verification"].get("conflicts", []):
+        st.error(f"CONFLICT {cf['reason_code']}: {cf['detail']}")
+
+    st.markdown("**Legal research**")
+    st.write(packet["legal"]["answer"] or "_not run_")
+    if packet["legal"]["citations"]:
+        st.caption("citations: " + ", ".join(packet["legal"]["citations"]))
+    chunks = packet["legal"].get("chunks", [])
+    with st.expander(f"Retrieved chunks for this case ({len(chunks)})"):
+        if not chunks:
+            st.info("No retrieval trace — the research stage runs only for cases "
+                    "that pass verification.")
+        for c in chunks:
+            st.markdown(f"**[{c['state']}/{c['citation']}]** score=`{c['score']}`")
+            st.write(c["text"])
+            st.divider()
+    with st.expander("RAG index contents — what was indexed"):
+        try:
+            from settleready.tools.rag import inspect_index
+            indexed = inspect_index(persist_dir=os.path.join(DATA_DIR, "chroma"))
+            st.write(f"{len(indexed)} chunks in the index")
+            for item in indexed:
+                st.markdown(f"**{item['id']}** [{item['state']}/{item['source']}]")
+                st.caption(item["text"][:220] + "…")
+        except Exception as e:  # noqa: BLE001 — surface it in the UI
+            st.warning(f"Could not read the index: {e}")
+
+    st.markdown("**ACV worksheet**")
+    acv = packet["acv"]
+    if acv:
+        st.metric("Actual cash value", f"${acv['acv']:,}")
+        for s in acv["worksheet"]["steps"]:
+            st.write(f"`{s['amount']:+7d}` {s['name']} — {s['detail']}")
+    else:
+        st.write("_not computed_")
+
+
 def tab_review():
     st.header("Senior analyst review")
     case_id = _selected()
@@ -191,6 +169,16 @@ def tab_review():
     if packet["verification"].get("conflicts"):
         for cf in packet["verification"]["conflicts"]:
             st.error(f"{cf['reason_code']}: {cf['detail']}")
+
+    if st.button("↻ Re-run analyst pipeline (rework)"):
+        with st.spinner("Re-running intake → extract → verify → research → compute…"):
+            try:
+                out = run_case(case_id, data_dir=DATA_DIR)
+            except Exception as e:  # noqa: BLE001 — surface it in the UI
+                st.error(f"Pipeline failed: {e}")
+                return
+        st.success(f"Routed → **{out['next']}**")
+        st.rerun()
 
     note = st.text_input("Reviewer note", "")
     col1, col2 = st.columns(2)
@@ -219,7 +207,7 @@ def tab_audit():
     log = bb.audit_log(case_id)
     bb.close()
     if not log:
-        st.info("No audit entries yet — run the pipeline first.")
+        st.info("No audit entries yet — the watcher triggers the pipeline on email arrival.")
     else:
         st.dataframe([{"time": e["ts"], "stage": e["stage"], "event": e["event"],
                        "details": json.dumps(e["details"])}
@@ -231,8 +219,8 @@ def tab_audit():
     tally.close()
     if rows:
         st.dataframe(rows, width="stretch")
-        st.caption(f"Promotion threshold: 3 returns → mandatory upfront verification. "
-                   f"Promoted rows run before the verify fan-out on future cases.")
+        st.caption("Promotion threshold: 3 returns → mandatory upfront verification. "
+                   "Promoted rows run before the verify fan-out on future cases.")
     else:
         st.info("No returns logged yet.")
 
@@ -247,16 +235,18 @@ def main() -> None:
         st.error("No fixtures found — run ./scripts/seed.sh first.")
         return
 
-    tabs = st.tabs(["Run case", "Packet", "Emails", "Review", "Audit trail"])
+    st.sidebar.header("Case")
+    st.sidebar.selectbox("Select case", _case_ids(), key="case_id")
+    st.sidebar.caption("Cases are created by the intake watcher when claim emails arrive.")
+
+    tabs = st.tabs(["Emails", "Packet", "Review", "Audit trail"])
     with tabs[0]:
-        tab_run()
+        tab_emails()
     with tabs[1]:
         tab_packet()
     with tabs[2]:
-        tab_emails()
-    with tabs[3]:
         tab_review()
-    with tabs[4]:
+    with tabs[3]:
         tab_audit()
 
 

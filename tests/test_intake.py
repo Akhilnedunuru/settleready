@@ -166,3 +166,35 @@ def test_watcher_saves_pdf_attachments(tmp_path):
     assert actions[0]["attachments_saved"] == ["claim_form.pdf"]
     assert (tmp_path / "pdfs" / "TL-2026-1045" / "claim_form.pdf").exists()
     assert calls == ["TL-2026-1045"]
+
+
+def test_duplicate_claim_email_does_not_refire(tmp_path):
+    calls = []
+    _mail(tmp_path)  # claim 1 for TL-2026-1045
+    _mail(tmp_path)  # claim 2, same case (e.g. customer double-sent)
+    w = _watcher(tmp_path, calls)
+    actions = w.poll_once()
+    assert [a["action"] for a in actions] == ["pipeline_triggered", "duplicate_claim"]
+    assert calls == ["TL-2026-1045"]  # exactly one automatic trigger
+
+
+def test_pipeline_failure_does_not_kill_daemon(tmp_path):
+    def boom(cid):
+        raise RuntimeError("LLM exploded")
+    _mail(tmp_path)
+    w = IntakeWatcher(data_dir=str(tmp_path), run_fn=boom)
+    os.makedirs(tmp_path / "pdfs" / "TL-2026-1045", exist_ok=True)
+    actions = w.poll_once()
+    assert actions[0]["action"] == "pipeline_failed"
+    assert "LLM exploded" in actions[0]["detail"]
+
+
+def test_state_survives_restart(tmp_path):
+    calls = []
+    _mail(tmp_path)
+    w1 = _watcher(tmp_path, calls)
+    w1.poll_once()
+    # new watcher instance, same data dir (daemon restart)
+    w2 = _watcher(tmp_path, calls)
+    assert w2.poll_once() == []
+    assert w2.status()["cases_triggered"] == ["TL-2026-1045"]

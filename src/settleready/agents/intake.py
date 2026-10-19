@@ -68,29 +68,45 @@ class IntakeWatcher:
         self._state_path = os.path.join(data_dir, "intake_state.json")
 
     # -- state ---------------------------------------------------------------
-    def _seen(self) -> set[str]:
+    # intake_state.json: {"seen": [email ids], "cases_triggered": [case ids]}
+    # Local processed-tracking is the source of truth (not IMAP \\Seen flags),
+    # so reading an email in a mail client never hides it from the watcher.
+    def _load_state(self) -> dict:
         try:
             with open(self._state_path) as f:
-                return set(json.load(f).get("seen", []))
+                d = json.load(f)
+                return {"seen": set(d.get("seen", [])),
+                        "cases_triggered": set(d.get("cases_triggered", []))}
         except (FileNotFoundError, json.JSONDecodeError):
-            return set()
+            return {"seen": set(), "cases_triggered": set()}
+
+    def _save_state(self, state: dict) -> None:
+        with open(self._state_path, "w") as f:
+            json.dump({"seen": sorted(state["seen"]),
+                       "cases_triggered": sorted(state["cases_triggered"])}, f, indent=2)
 
     def _mark_seen(self, email_id: str) -> None:
-        seen = self._seen()
-        seen.add(email_id)
-        with open(self._state_path, "w") as f:
-            json.dump({"seen": sorted(seen)}, f, indent=2)
+        state = self._load_state()
+        state["seen"].add(email_id)
+        self._save_state(state)
+
+    def _mark_case_triggered(self, case_id: str) -> None:
+        state = self._load_state()
+        state["cases_triggered"].add(case_id)
+        self._save_state(state)
 
     def status(self) -> dict:
         """For the UI: what the watcher has processed."""
-        return {"seen_count": len(self._seen()),
+        state = self._load_state()
+        return {"seen_count": len(state["seen"]),
+                "cases_triggered": sorted(state["cases_triggered"]),
                 "state_file": self._state_path}
 
     # -- polling ---------------------------------------------------------------
     def poll_once(self) -> list[dict]:
         """Process every unseen inbound email. Returns the actions taken."""
         actions = []
-        seen = self._seen()
+        seen = self._load_state()["seen"]
         bb = CaseBlackboard(os.path.join(self._data_dir, "blackboard.db"))
         try:
             for email in self._mail.poll_inbox():
@@ -110,6 +126,12 @@ class IntakeWatcher:
         if route_claim(email) != "total_loss" or not case_id:
             return {"email": email.id, "action": "routed_other",
                     "detail": f"subject={email.subject!r}"}
+        # One automatic trigger per case ID — duplicate claim emails don't
+        # re-fire the pipeline (manual re-runs go through the Review tab).
+        if case_id in self._load_state()["cases_triggered"]:
+            return {"email": email.id, "action": "duplicate_claim",
+                    "case_id": case_id,
+                    "detail": "pipeline already triggered for this case"}
         # Real-world step: persist the email's PDF attachments as the case's
         # documents before the pipeline runs. (The mock's demo emails carry no
         # attachments; their PDFs come from scripts/seed.sh.)
@@ -118,7 +140,12 @@ class IntakeWatcher:
         if not os.path.isdir(pdf_dir):
             return {"email": email.id, "action": "no_documents",
                     "detail": f"no PDFs for {case_id} yet"}
-        summary = self._run_fn(case_id)
+        try:
+            summary = self._run_fn(case_id)
+        except Exception as e:  # noqa: BLE001 — a daemon must not die on one bad case
+            return {"email": email.id, "action": "pipeline_failed",
+                    "case_id": case_id, "detail": str(e)[:200]}
+        self._mark_case_triggered(case_id)
         return {"email": email.id, "action": "pipeline_triggered",
                 "case_id": case_id, "routed": summary.get("next"),
                 "attachments_saved": saved}
@@ -152,7 +179,11 @@ class IntakeWatcher:
         bb.log(case_id, case["stage"], "customer_reply",
                {"from": email.from_, "body": email.body[:500]})
         if case["stage"] in REWORK_STAGES:
-            summary = self._run_fn(case_id)
+            try:
+                summary = self._run_fn(case_id)
+            except Exception as e:  # noqa: BLE001 — a daemon must not die on one bad case
+                return {"email": email.id, "action": "pipeline_failed",
+                        "case_id": case_id, "detail": str(e)[:200]}
             return {"email": email.id, "action": "reply_retriggered",
                     "case_id": case_id, "routed": summary.get("next")}
         return {"email": email.id, "action": "reply_logged", "case_id": case_id}

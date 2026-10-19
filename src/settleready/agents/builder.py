@@ -43,6 +43,7 @@ def build_packet(case_id: str, data_dir: str = "data") -> dict:
         "loss_type": case.get("loss_type", ""),
         "title_state": (fields.get("title_state") or {}).get("value", ""),
         "fields": fields,
+        "trace": state.get("extraction_trace", []),
         "extraction_flags": state.get("extraction_flags", []),
         "verification": verification,
         "legal": {"answer": legal.get("answer", ""),

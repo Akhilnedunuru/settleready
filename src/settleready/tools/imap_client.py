@@ -48,14 +48,15 @@ class ImapEmailClient:
 
     # -- EmailClient protocol --------------------------------------------------
     def poll_inbox(self) -> list[EmailRecord]:
-        """Fetch UNSEEN messages, oldest first. Never marks them read on the
-        server — dedup is the watcher's intake_state.json (source of truth)."""
+        """Fetch all messages, oldest first. Dedup is the watcher's local
+        intake_state.json — NOT the IMAP \\Seen flag — so reading an email in
+        a mail client never hides it from the watcher."""
         import imaplib
         imap = imaplib.IMAP4_SSL(self._imap_host)
         try:
             imap.login(self._address, self._password)
             imap.select("INBOX")
-            _, data = imap.search(None, "UNSEEN")
+            _, data = imap.search(None, "ALL")
             records = []
             for num in data[0].split():
                 _, msg_data = imap.fetch(num, "(RFC822)")
