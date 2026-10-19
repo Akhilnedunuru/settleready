@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 
+from settleready.memory.events import emit as _emit_event
 from settleready.memory.tally import ReturnTallyStore
 from settleready.tools.mock_dbs import (
     MockClueReports,
@@ -67,6 +68,10 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
 
     # 1. Title registry.
     title = MockStateTitleDB(data_dir).lookup(vin) if vin else None
+    _emit_event(data_dir, case_id, "tool_call",
+                {"tool": "MockStateTitleDB.lookup", "args": {"vin": vin},
+                 "result": (f"{title['state']} title, brands: {title.get('brands') or 'none'}"
+                            if title else "no record")})
     if title is None:
         checks.append({"check": "title_lookup", "status": "fail",
                        "detail": f"No title record for VIN {vin}"})
@@ -80,6 +85,10 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
 
     # 2. Lienholder — extracted (declared) vs. verified (registry); registry wins.
     lien = MockLienholderAPI(data_dir).lien_for(vin) if vin else None
+    _emit_event(data_dir, case_id, "tool_call",
+                {"tool": "MockLienholderAPI.lien_for", "args": {"vin": vin},
+                 "result": (f"{lien['holder']} ${lien['amount']:,}"
+                            if lien else "no lien on record")})
     if lien and declared_lien is False:
         conflicts.append({
             "reason_code": "UNDECLARED_LIEN", "field": "lien_status",
@@ -103,6 +112,10 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
 
     # 3. CLUE loss history.
     priors = MockClueReports(data_dir).history(policy_number) if policy_number else []
+    _emit_event(data_dir, case_id, "tool_call",
+                {"tool": "MockClueReports.history",
+                 "args": {"policy_number": policy_number},
+                 "result": f"{len(priors)} prior claim(s)"})
     checks.append({"check": "clue_lookup",
                    "status": "warn" if priors else "pass",
                    "detail": f"{len(priors)} prior claim(s) on policy {policy_number}"})
@@ -124,6 +137,10 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
     # valuation API can return zero comps (rare vehicle, thin market) — that
     # must route to analyst follow-up, not crash the pipeline.
     comps = MockValuationService(data_dir).comparables(case_id)
+    _emit_event(data_dir, case_id, "tool_call",
+                {"tool": "MockValuationService.comparables",
+                 "args": {"case_id": case_id},
+                 "result": f"{len(comps)} comparable listing(s)"})
     if not comps:
         checks.append({"check": "valuation_data", "status": "fail",
                        "detail": "No comparable listings found for valuation"})

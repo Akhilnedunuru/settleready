@@ -124,6 +124,14 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
                                     json_mode=True, max_tokens=1500, temperature=0.0)
             result = json.loads(raw).get("fields", {})
             error = None
+            if data_dir:
+                from settleready.memory.events import emit
+                emit(data_dir, case_id, "tool_call",
+                     {"tool": "llm.complete",
+                      "args": {"purpose": f"extract {missing} from {doc['source']}",
+                               "iteration": iteration},
+                      "result": (f"{len([f for f in missing if (result.get(f) or {}).get('value')])}"
+                                 f"/{len(missing)} fields returned")})
         except Exception as e:  # LLM failure or bad JSON: observe, don't crash
             result, error = {}, f"LLM call failed: {e}"
 

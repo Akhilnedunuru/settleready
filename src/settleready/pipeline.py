@@ -71,7 +71,15 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     pdfs = sorted(glob.glob(os.path.join(pdf_dir, "*.pdf")))
     if not pdfs:
         raise FileNotFoundError(f"No PDFs for {case_id} in {pdf_dir} — run scripts/seed.sh first.")
-    docs = [{"source": os.path.basename(f), "pages": parse_document(f)} for f in pdfs]
+    docs = []
+    for f in pdfs:
+        name = os.path.basename(f)
+        pages = parse_document(f)
+        docs.append({"source": name, "pages": pages})
+        _emit_event(data_dir, case_id, "tool_call",
+                    {"tool": "pdf_parser.parse_document",
+                     "args": {"file": name},
+                     "result": f"{len(pages)} page(s) extracted"})
     docs_present = [_doc_name(f) for f in pdfs]
     bb.write(case_id, "docs_present", docs_present)
     _emit_event(data_dir, case_id, "documents_parsed",
@@ -115,8 +123,20 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     # -- research: state law for this title state --------------------------------
     bb.set_stage(case_id, "research")
     title_state = (extraction["fields"].get("title_state") or {}).get("value", "")
+    if not title_state:
+        # Fallback: our policy numbers are prefixed with the state (TX-A-...).
+        # An empty title_state would make state-filtered retrieval return
+        # nothing; deriving it keeps legal research working instead of
+        # silently producing an empty section.
+        policy_no = (extraction["fields"].get("policy_number") or {}).get("value", "")
+        prefix = (policy_no.split("-")[0] or "") if policy_no else ""
+        if len(prefix) == 2 and prefix.isalpha():
+            title_state = prefix.upper()
+            _emit_event(data_dir, case_id, "state_fallback",
+                        {"from": "policy_number", "state": title_state})
     legal = research("What is the total loss threshold and valuation method?",
-                     title_state, data_dir=data_dir, provider=provider)
+                     title_state, data_dir=data_dir, provider=provider,
+                     case_id=case_id)
     bb.write(case_id, "legal_research", legal)
     _emit_event(data_dir, case_id, "legal_research",
                 {"citations": legal["citations"]})
@@ -129,6 +149,10 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     comps = MockValuationService(data_dir).comparables(case_id)
     mileage = (fields.get("mileage") or {}).get("value") or 0
     acv, worksheet = compute_acv(comparables=comps, mileage=mileage)
+    _emit_event(data_dir, case_id, "tool_call",
+                {"tool": "acv.compute_acv",
+                 "args": {"comparables": len(comps), "mileage": mileage},
+                 "result": f"ACV=${acv:,}"})
     bb.write(case_id, "acv", {"acv": acv, "worksheet": worksheet})
     summary["stages"].append(f"compute: ACV=${acv:,} ({worksheet['formula']})")
 

@@ -215,3 +215,69 @@ def test_is_running_marker_lifecycle(tmp_path):
     old = time.time() - 9999
     os.utime(_running_marker(str(tmp_path), "TL-1"), (old, old))
     assert not is_running(str(tmp_path), "TL-1")
+
+
+def test_tool_calls_emitted_to_event_bus(tmp_path):
+    import json
+    from settleready.data.seed import main as seed_main
+    from settleready.memory import events
+    from settleready.pipeline import run_case
+    seed_main(seed=42, out=str(tmp_path), num_cases=1)
+
+    class FakeProvider:
+        def complete(self, system, user, json_mode=False, max_tokens=0, temperature=0.0):
+            return json.dumps({"fields": {
+                f: {"value": "X", "confidence": 0.95, "span": "x"}
+                for f in ["vin", "mileage", "title_state", "policy_number",
+                          "holder_name", "loss_type", "loss_date", "lien_declared"]}})
+
+    run_case("TL-2026-1043", data_dir=str(tmp_path), provider=FakeProvider())
+    tools = [e["detail"]["tool"] for e in
+             events.tail(str(tmp_path), case_id="TL-2026-1043", limit=60)
+             if e["event"] == "tool_call"]
+    for want in ["pdf_parser.parse_document", "llm.complete",
+                 "MockStateTitleDB.lookup", "MockLienholderAPI.lien_for",
+                 "MockClueReports.history", "MockValuationService.comparables"]:
+        assert want in tools, f"missing tool_call for {want}"
+    # every tool_call carries args + a human-readable result
+    for e in events.tail(str(tmp_path), case_id="TL-2026-1043", limit=60):
+        if e["event"] == "tool_call":
+            assert "tool" in e["detail"] and "result" in e["detail"]
+
+
+def test_state_fallback_from_policy_number(tmp_path):
+    import json, random
+    from settleready.data.seed import main as seed_main, case_specs
+    from settleready.memory import events
+    import settleready.agents.researcher as R
+    from settleready.pipeline import run_case
+    seed_main(seed=42, out=str(tmp_path), num_cases=3)
+    spec = [c for c in case_specs(random.Random(42), n=3)
+            if c["case_id"] == "TL-2026-1044"][0]
+    seen_states = []
+    orig_retrieve = R.retrieve
+    R.retrieve = lambda state, question, persist_dir="", k=3, provider=None: (
+        seen_states.append(state) or [])
+    try:
+        vals = {"vin": spec["vehicle"]["vin"],
+                "mileage": spec["vehicle"]["mileage"],
+                "title_state": "",  # blank -> fallback must kick in
+                "policy_number": spec["policy"]["number"],
+                "holder_name": spec["policy"]["holder"],
+                "loss_type": "fire", "loss_date": spec["loss"]["date"],
+                "lien_declared": False}
+
+        class NoStateProvider:
+            def complete(self, system, user, json_mode=False, max_tokens=0,
+                         temperature=0.0):
+                return json.dumps({"fields":
+                                   {f: {"value": v, "confidence": 0.95, "span": "x"}
+                                    for f, v in vals.items()}})
+
+        run_case("TL-2026-1044", data_dir=str(tmp_path), provider=NoStateProvider())
+    finally:
+        R.retrieve = orig_retrieve
+    fb = [e for e in events.tail(str(tmp_path), case_id="TL-2026-1044", limit=60)
+          if e["event"] == "state_fallback"]
+    assert fb and fb[0]["detail"]["state"] == "GA", "fallback did not derive GA"
+    assert seen_states and seen_states[0] == "GA", "research did not get GA"

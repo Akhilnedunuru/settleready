@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from settleready.memory.events import emit as _emit_event
 from settleready.tools.rag import retrieve
 
 _SYSTEM = """You are an insurance-law research assistant. Answer the question using
@@ -20,10 +21,12 @@ Respond with ONLY valid JSON: {"answer": "...", "cited_sources": ["TX.md", ...]}
 
 
 def research(question: str, title_state: str, data_dir: str = "data",
-             provider=None, k: int = 3) -> dict:
+             provider=None, k: int = 3, case_id: str = "") -> dict:
     """Research a question against the title state's statutes.
 
     Returns {"question", "state", "answer", "citations": [...], "chunks": [...]}.
+    Tool calls (vector retrieval, synthesis) are emitted to the event bus so
+    the UI can show them live.
     """
     if provider is None:
         from settleready.llm.provider import get_provider
@@ -31,6 +34,10 @@ def research(question: str, title_state: str, data_dir: str = "data",
 
     chunks = retrieve(title_state, question,
                       persist_dir=f"{data_dir}/chroma", k=k, provider=provider)
+    _emit_event(data_dir, case_id, "tool_call",
+                {"tool": "rag.retrieve",
+                 "args": {"state": title_state.upper(), "k": k},
+                 "result": f"{len(chunks)} chunk(s) retrieved"})
     if not chunks:
         return {"question": question, "state": title_state.upper(),
                 "answer": "The retrieved statutes do not cover this.",
@@ -40,6 +47,10 @@ def research(question: str, title_state: str, data_dir: str = "data",
     user = f"Question: {question}\n\nRetrieved excerpts (state: {title_state.upper()}):\n{context}"
     raw = provider.complete(system=_SYSTEM, user=user,
                             json_mode=True, max_tokens=800, temperature=0.0)
+    _emit_event(data_dir, case_id, "tool_call",
+                {"tool": "llm.complete",
+                 "args": {"purpose": "legal synthesis", "chunks": len(chunks)},
+                 "result": "answer synthesized with citations"})
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:

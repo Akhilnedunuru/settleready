@@ -124,6 +124,13 @@ def _render_event(ev: dict) -> None:
     elif e == "legal_research":
         cites = ", ".join(d.get("citations", [])) or "none"
         st.write(f"`{ts}` ⚖️ legal research — citations: {cites}")
+    elif e == "tool_call":
+        args = d.get("args") or {}
+        arg_str = ", ".join(f"{k}={v}" for k, v in args.items())
+        st.write(f"`{ts}` 🔧 `{d.get('tool')}`({arg_str}) → {d.get('result')}")
+    elif e == "state_fallback":
+        st.write(f"`{ts}` 🧭 title_state empty — derived `{d.get('state')}` "
+                 f"from {d.get('from')}")
 
 
 def _render_event_feed(case_id: str, limit: int = 25) -> None:
