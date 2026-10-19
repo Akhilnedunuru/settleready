@@ -244,81 +244,395 @@ def _generated_case(rng: random.Random, i: int) -> dict:
 
 # ---------------------------------------------------------------- PDFs ---
 
-def _pdf(path: str, title: str, rows: list[tuple[str, str]]) -> None:
-    styles = {
-        "banner": ParagraphStyle("b", fontSize=9, textColor=colors.red, leading=12),
-        "h": ParagraphStyle("h", fontSize=16, leading=20, spaceAfter=8),
-        "k": ParagraphStyle("k", fontSize=10, leading=13),
-        "v": ParagraphStyle("v", fontSize=10, leading=13),
+# ------------------------------------------------------- PDF forms ---
+# Realistic claim documents, modeled on real-world forms (ACORD 2 Automobile
+# Loss Notice, Texas CR-3 crash report, state certificate of title, body-shop
+# repair estimate). Layouts are original; all data is synthetic.
+
+_BANNER_PDF = BANNER.replace("\u2014", "-")
+
+
+def _form_styles() -> dict:
+    return {
+        "doctitle": ParagraphStyle("doctitle", fontName="Helvetica-Bold",
+                                   fontSize=15, leading=18, spaceAfter=2),
+        "docsub": ParagraphStyle("docsub", fontSize=9, leading=11, spaceAfter=6,
+                                 textColor=colors.HexColor("#555555")),
+        "section": ParagraphStyle("section", fontName="Helvetica-Bold",
+                                  fontSize=10, leading=13, textColor=colors.white),
+        "k": ParagraphStyle("k", fontName="Helvetica-Bold", fontSize=9, leading=12),
+        "v": ParagraphStyle("v", fontSize=9, leading=12),
+        "body": ParagraphStyle("body", fontSize=9, leading=13, spaceAfter=6),
+        "small": ParagraphStyle("small", fontSize=7.5, leading=10, spaceAfter=4,
+                                textColor=colors.HexColor("#555555")),
+        "center": ParagraphStyle("center", fontSize=9, leading=12, alignment=1),
     }
-    story = [Paragraph(BANNER, styles["banner"]), Spacer(1, 0.15 * inch),
-             Paragraph(title, styles["h"])]
-    table_rows = [[Paragraph(f"<b>{k}</b>", styles["k"]), Paragraph(str(v), styles["v"])]
-                  for k, v in rows]
-    t = Table(table_rows, colWidths=[2.0 * inch, 4.5 * inch])
+
+
+def _finish_doc(path: str, story: list) -> None:
+    def _banner(canvas, doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 7)
+        canvas.setFillColor(colors.red)
+        canvas.drawCentredString(4.25 * inch, 10.6 * inch, _BANNER_PDF)
+        canvas.restoreState()
+    SimpleDocTemplate(path, pagesize=letter, topMargin=0.8 * inch,
+                      bottomMargin=0.6 * inch).build(
+        story, onFirstPage=_banner, onLaterPages=_banner)
+
+
+def _section_bar(story: list, styles: dict, text: str) -> None:
+    t = Table([[Paragraph(text.upper(), styles["section"])]], colWidths=[7.5 * inch])
     t.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f0f0f0")),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#2f3e55")),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story += [Spacer(1, 0.14 * inch), t]
+
+
+def _fields(story: list, styles: dict, rows: list[tuple[str, str]],
+            label_w: float = 2.3 * inch) -> None:
+    tr = [[Paragraph(f"<b>{k}</b>", styles["k"]), Paragraph(str(v), styles["v"])]
+          for k, v in rows]
+    t = Table(tr, colWidths=[label_w, 7.5 * inch - label_w])
+    t.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#999999")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef1f5")),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(t)
-    SimpleDocTemplate(path, pagesize=letter,
-                      topMargin=0.6 * inch, bottomMargin=0.6 * inch).build(story)
+
+
+def _sig_block(story: list, styles: dict, labels: list[str]) -> None:
+    cells = []
+    for lab in labels:
+        cells += [Paragraph(f"X{'_' * 34}", styles["v"]),
+                  Paragraph(lab, styles["small"])]
+    t = Table([cells], colWidths=[2.5 * inch] * len(labels))
+    t.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 6)]))
+    story += [Spacer(1, 0.2 * inch), t]
+
+
+_OFFICERS = ["J. Martinez", "R. Thompson", "K. Okafor", "D. Nguyen", "S. Patel"]
+
+
+def _case_rng(case: dict) -> random.Random:
+    # deterministic cosmetic extras (plates, DL nos, badge nos) per case
+    return random.Random(1000 + int(case["case_id"].rsplit("-", 1)[-1]))
+
+
+def _plate(rng: random.Random, state: str) -> str:
+    return f"{state} {''.join(rng.choice('ABCDEFGHJKLMNPRSTUVWXYZ') for _ in range(3))}-{rng.randint(1000, 9999)}"
+
+
+def _build_fnol(case: dict, pdf_dir: str) -> None:
+    """First Notice of Loss - Automobile (ACORD 2 style)."""
+    v, p, loss = case["vehicle"], case["policy"], case["loss"]
+    rng = _case_rng(case)
+    styles = _form_styles()
+    city, zipc = CITIES[case["title_state"]]
+    holder_addr = f"{rng.choice(STREETS)}, {city}, {case['title_state']} {zipc}"
+    phone = f"(555) 01{rng.randint(0, 9)}-{rng.randint(1000, 9999):04d}"
+    plate = _plate(rng, case["title_state"])
+    loss_time = f"{rng.randint(1, 12)}:{rng.randint(10, 59):02d} {rng.choice(['AM', 'PM'])}"
+    driver = "Unknown - vehicle stolen" if case["loss_type"] == "theft" else p["holder"]
+
+    story = [Paragraph("FIRST NOTICE OF LOSS - AUTOMOBILE", styles["doctitle"]),
+             Paragraph("Capstone Mutual Insurance Company &nbsp;|&nbsp; Auto Claims Department",
+                       styles["docsub"])]
+    _section_bar(story, styles, "Report information")
+    _fields(story, styles, [
+        ("Date reported", loss["date"]),
+        ("Reported by", f"{p['holder']} (Policyholder)"),
+        ("Report method", "Mobile app"),
+        ("Claim reference no.", case["case_id"]),
+    ])
+    _section_bar(story, styles, "Policy information")
+    _fields(story, styles, [
+        ("Company", "Capstone Mutual Insurance Company"),
+        ("Policy number", p["number"]),
+        ("Policy type", "Personal Auto"),
+        ("Policy period", "01/01/2026 to 12/31/2026"),
+    ])
+    _section_bar(story, styles, "Insured")
+    _fields(story, styles, [
+        ("Name", p["holder"]),
+        ("Address", holder_addr),
+        ("Phone", phone),
+    ])
+    _section_bar(story, styles, "Loss details")
+    _fields(story, styles, [
+        ("Date of loss", loss["date"]),
+        ("Time of loss", loss_time),
+        ("Loss type", case["loss_type"].upper()),
+        ("Location of loss", f"{city}, {case['title_state']}"),
+        ("Description of loss", loss["description"]),
+        ("Authority contacted", loss["agency"]),
+        ("Authority report no.", loss["police_report_no"]),
+    ])
+    _section_bar(story, styles, "Insured vehicle")
+    _fields(story, styles, [
+        ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
+        ("Vehicle Identification Number (VIN)", v["vin"]),
+        ("License plate", plate),
+        ("Mileage", f"{v['mileage']:,}"),
+        ("Owner", p["holder"]),
+        ("Driver at time of loss", driver),
+    ])
+    _section_bar(story, styles, "Lienholder")
+    lien = case["lien"]
+    _fields(story, styles, [
+        ("Is there a lienholder on this vehicle?",
+         "YES" if case["declared_lien"] else "NO"),
+        ("Lienholder name", lien["holder"] if case["declared_lien"] and lien else "N/A"),
+    ])
+    story.append(Paragraph(
+        "Fraud notice: Any person who knowingly presents a false or fraudulent claim "
+        "for payment of a loss is subject to criminal and civil penalties.",
+        styles["small"]))
+    _sig_block(story, styles, ["Signature of insured", "Date"])
+    _finish_doc(os.path.join(pdf_dir, "claim_form.pdf"), story)
+
+
+def _build_police_report(case: dict, pdf_dir: str) -> None:
+    """Police report. Theft/fire get an incident report; collision gets a
+    CR-3 style crash report."""
+    v, p, loss = case["vehicle"], case["policy"], case["loss"]
+    rng = _case_rng(case)
+    styles = _form_styles()
+    city, zipc = CITIES[case["title_state"]]
+    holder_addr = f"{rng.choice(STREETS)}, {city}, {case['title_state']} {zipc}"
+    plate = _plate(rng, case["title_state"])
+    officer = rng.choice(_OFFICERS)
+    badge = f"{rng.randint(1000, 9999)}"
+    loss_kind = case["loss_type"]
+
+    if loss_kind == "theft":
+        title, sub = "INCIDENT / OFFENSE REPORT", "Stolen Motor Vehicle"
+    elif loss_kind == "fire":
+        title, sub = "INCIDENT REPORT", "Vehicle Fire"
+    else:
+        title, sub = "PEACE OFFICER'S CRASH REPORT", "Motor Vehicle Traffic Crash"
+    story = [Paragraph(title, styles["doctitle"]),
+             Paragraph(f"{loss['agency']} &nbsp;|&nbsp; {sub}", styles["docsub"]),
+             Paragraph(f"<b>Report no. {loss['police_report_no']}</b>", styles["center"])]
+
+    if loss_kind == "collision":
+        _section_bar(story, styles, "Crash identification")
+        _fields(story, styles, [
+            ("Crash date", loss["date"]),
+            ("Crash time", f"{rng.randint(1, 12)}:{rng.randint(10, 59):02d} {rng.choice(['AM', 'PM'])}"),
+            ("Location", f"{rng.choice(STREETS)}, {city}, {case['title_state']}"),
+            ("Weather", "Clear"), ("Road condition", "Dry"), ("Light", "Daylight"),
+        ])
+        _section_bar(story, styles, "Unit 1 - Driver")
+        _fields(story, styles, [
+            ("Driver name", p["holder"]),
+            ("Driver license no.", f"{case['title_state']}{rng.randint(10000000, 99999999)}"),
+            ("Address", holder_addr),
+        ])
+        _section_bar(story, styles, "Unit 1 - Vehicle")
+        _fields(story, styles, [
+            ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
+            ("Color", v["color"]),
+            ("Vehicle Identification Number (VIN)", v["vin"]),
+            ("License plate", plate),
+            ("Insurance company", "Capstone Mutual Insurance Company"),
+            ("Policy number", p["number"]),
+        ])
+        _section_bar(story, styles, "Injury / EMS")
+        _fields(story, styles, [
+            ("Injury severity (KABCO)", "N - No apparent injury"),
+            ("EMS transport", "Not transported"),
+        ])
+        _section_bar(story, styles, "Contributing factors")
+        story.append(Paragraph(
+            "Unit 1: Failed to control speed. Single vehicle departed the roadway "
+            "and struck a guardrail.", styles["body"]))
+    else:
+        _section_bar(story, styles, "Incident information")
+        offense = ("Theft of Motor Vehicle" if loss_kind == "theft"
+                   else "Vehicle Fire")
+        _fields(story, styles, [
+            ("Offense / incident", offense),
+            ("Date occurred", loss["date"]),
+            ("Date reported", loss["date"]),
+            ("Location of occurrence",
+             f"{rng.choice(STREETS)}, {city}, {case['title_state']}"),
+        ])
+        _section_bar(story, styles, "Vehicle involved")
+        _fields(story, styles, [
+            ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
+            ("Color", v["color"]),
+            ("Vehicle Identification Number (VIN)", v["vin"]),
+            ("License plate", plate),
+            ("Odometer", f"{v['mileage']:,}"),
+            ("Owner", f"{p['holder']} - {holder_addr}"),
+        ])
+        if loss_kind == "theft":
+            _section_bar(story, styles, "Recovery / NCIC")
+            _fields(story, styles, [
+                ("Vehicle recovered", "NO - not recovered at time of report"),
+                ("NCIC entry", f"Entered as stolen - NIC #{rng.choice('ABCDEFGHJKLMNPRSTUVWXYZ')}{rng.randint(100000000, 999999999)}"),
+            ])
+
+    _section_bar(story, styles, "Narrative")
+    if loss_kind == "theft":
+        narrative = (f"Complainant {p['holder']} states the {v['year']} {v['make']} "
+                     f"{v['model']} (VIN {v['vin']}) was parked at the location above "
+                     f"and was discovered missing on {loss['date']}. {loss['description']} "
+                     f"Vehicle entered into NCIC as stolen. Investigation continuing.")
+    elif loss_kind == "fire":
+        narrative = (f"Officers responded to a vehicle fire involving a {v['year']} "
+                     f"{v['make']} {v['model']} (VIN {v['vin']}) owned by {p['holder']}. "
+                     f"{loss['description']} Fire department extinguished the fire; "
+                     f"vehicle sustained total burn damage and was released to the owner.")
+    else:
+        narrative = (f"Unit 1, driven by {p['holder']}, was traveling on the roadway above "
+                     f"when the driver failed to control speed and the {v['year']} {v['make']} "
+                     f"{v['model']} (VIN {v['vin']}) departed the roadway and struck a "
+                     f"guardrail. {loss['description']} No apparent injuries at the scene. "
+                     f"Vehicle towed due to disabling damage.")
+    story.append(Paragraph(narrative, styles["body"]))
+
+    _section_bar(story, styles, "Reporting officer")
+    _fields(story, styles, [
+        ("Officer", officer),
+        ("Badge no.", badge),
+        ("Date", loss["date"]),
+    ])
+    _finish_doc(os.path.join(pdf_dir, "police_report.pdf"), story)
+
+
+_STATE_NAMES = {"TX": "TEXAS", "GA": "GEORGIA", "CA": "CALIFORNIA"}
+
+
+def _build_title(case: dict, pdf_dir: str) -> None:
+    """State certificate of title."""
+    v, p = case["vehicle"], case["policy"]
+    rng = _case_rng(case)
+    styles = _form_styles()
+    city, zipc = CITIES[case["title_state"]]
+    holder_addr = f"{rng.choice(STREETS)}, {city}, {case['title_state']} {zipc}"
+    st = case["title_state"]
+    title_no = f"{st}-T-{rng.randint(100000, 999999)}"
+    lien = case["lien"]
+
+    story = [Paragraph(f"STATE OF {_STATE_NAMES[st]}", styles["doctitle"]),
+             Paragraph("Department of Motor Vehicles &nbsp;|&nbsp; Certificate of Title",
+                       styles["docsub"])]
+    _section_bar(story, styles, "Title record")
+    _fields(story, styles, [
+        ("Title number", title_no),
+        ("Date issued", "2026-02-11"),
+        ("Title brands", ", ".join(case["title_brands"]) or "NONE"),
+    ])
+    _section_bar(story, styles, "Vehicle")
+    _fields(story, styles, [
+        ("Vehicle Identification Number (VIN)", v["vin"]),
+        ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
+        ("Color", v["color"]),
+        ("Odometer reading", f"{v['mileage']:,}"),
+    ])
+    _section_bar(story, styles, "Owner")
+    _fields(story, styles, [
+        ("Owner name", p["holder"]),
+        ("Owner address", holder_addr),
+    ])
+    _section_bar(story, styles, "First lienholder")
+    _fields(story, styles, [
+        ("Lienholder",
+         f"{lien['holder']} - ${lien['amount']:,}" if lien else "NONE"),
+    ])
+    story.append(Paragraph(
+        "This certificate is issued as evidence of ownership. Any alteration "
+        "voids this document. Surrender to the Department upon transfer of ownership.",
+        styles["small"]))
+    _sig_block(story, styles, ["Authorized signature", "Date"])
+    _finish_doc(os.path.join(pdf_dir, "title.pdf"), story)
+
+
+_ESTIMATE_ITEMS = [  # (operation, weight of total)
+    ("Frame straightening", 0.2121),
+    ("Front suspension replacement", 0.1439),
+    ("Body panels + refinish", 0.3485),
+    ("Airbag module replacement", 0.1162),
+    ("Mechanical labor", 0.1793),
+]
+
+
+def _build_estimate(case: dict, pdf_dir: str) -> None:
+    """Body-shop collision repair estimate with line items summing to total."""
+    v, p, loss = case["vehicle"], case["policy"], case["loss"]
+    rng = _case_rng(case)
+    styles = _form_styles()
+    city, zipc = CITIES[case["title_state"]]
+    total = case["repair_estimate_total"]
+    est_no = f"EST-{rng.randint(10000, 99999)}"
+
+    story = [Paragraph("COLLISION REPAIR ESTIMATE", styles["doctitle"]),
+             Paragraph("Capstone Auto Body &nbsp;|&nbsp; 4400 W Braker Ln, Austin, TX 78759"
+                       " &nbsp;|&nbsp; (512) 555-0148", styles["docsub"])]
+    _section_bar(story, styles, "Estimate header")
+    _fields(story, styles, [
+        ("Estimate no.", est_no),
+        ("Estimate date", loss["date"]),
+        ("Customer", p["holder"]),
+        ("Insurance / Claim", f"Capstone Mutual - {case['case_id']}"),
+        ("Vehicle", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
+        ("Vehicle Identification Number (VIN)", v["vin"]),
+        ("Mileage", f"{v['mileage']:,}"),
+    ])
+    _section_bar(story, styles, "Line items")
+    rows = [[Paragraph("<b>#</b>", styles["k"]),
+             Paragraph("<b>Operation</b>", styles["k"]),
+             Paragraph("<b>Amount</b>", styles["k"])]]
+    amounts, acc = [], 0
+    for i, (op, w) in enumerate(_ESTIMATE_ITEMS):
+        amt = total if i == len(_ESTIMATE_ITEMS) - 1 else round(w * total)
+        if i == len(_ESTIMATE_ITEMS) - 1:
+            amt = total - acc
+        amounts.append((op, amt))
+        acc += amt
+    for i, (op, amt) in enumerate(amounts, 1):
+        rows.append([Paragraph(str(i), styles["v"]),
+                     Paragraph(op, styles["v"]),
+                     Paragraph(f"${amt:,}", styles["v"])])
+    rows.append([Paragraph("", styles["v"]),
+                 Paragraph("<b>TOTAL ESTIMATE</b>", styles["v"]),
+                 Paragraph(f"<b>${total:,}</b>", styles["v"])])
+    t = Table(rows, colWidths=[0.5 * inch, 4.7 * inch, 2.3 * inch])
+    t.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#999999")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef1f5")),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#e2e8f0")),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+    story.append(Paragraph(
+        "This is an estimate only; the final invoice may vary once teardown is "
+        "complete. Supplement required for hidden damage.",
+        styles["small"]))
+    _sig_block(story, styles, ["Estimator signature", "Customer authorization"])
+    _finish_doc(os.path.join(pdf_dir, "repair_estimate.pdf"), story)
 
 
 def _build_pdfs(case: dict, pdf_dir: str) -> None:
-    v, p, loss = case["vehicle"], case["policy"], case["loss"]
-    city, zipc = CITIES[case["title_state"]]
-    holder_addr = f"{random.Random(7).choice(STREETS)}, {city} {zipc}"
-
-    _pdf(os.path.join(pdf_dir, "claim_form.pdf"), "Mobile Claim Filing Record", [
-        ("Case ID", case["case_id"]),
-        ("Policy number", p["number"]),
-        ("Policyholder", f'{p["holder"]} — {holder_addr}'),
-        ("Loss date", loss["date"]),
-        ("Loss type", case["loss_type"].upper()),
-        ("Description", loss["description"]),
-        ("Vehicle", f'{v["year"]} {v["make"]} {v["model"]} {v["trim"]}'),
-        ("VIN", v["vin"]),
-        ("Mileage", f'{v["mileage"]:,}'),
-        ("Lien declared by claimant", "YES" if case["declared_lien"] else "NO"),
-    ])
-
-    _pdf(os.path.join(pdf_dir, "police_report.pdf"),
-         f'{loss["agency"]} — Incident Report {loss["police_report_no"]}', [
-             ("Report no.", loss["police_report_no"]),
-             ("Agency", loss["agency"]),
-             ("Date", loss["date"]),
-             ("Vehicle", f'{v["year"]} {v["make"]} {v["model"]} — VIN {v["vin"]}'),
-             ("Narrative", loss["description"] + " Vehicle not recovered at time of report."),
-         ])
-
+    _build_fnol(case, pdf_dir)
+    _build_police_report(case, pdf_dir)
     if "title" in case["documents"]:
-        lien = case["lien"]
-        _pdf(os.path.join(pdf_dir, "title.pdf"),
-             f'State of {case["title_state"]} — Certificate of Title', [
-                 ("Title no.", f'{case["title_state"]}-T-{random.Random(9).randint(100000,999999)}'),
-                 ("VIN", v["vin"]),
-                 ("Owner", p["holder"]),
-                 ("Title brands", ", ".join(case["title_brands"]) or "NONE"),
-                 ("Lienholder", f'{lien["holder"]} — ${lien["amount"]:,}' if lien else "NONE"),
-             ])
-
+        _build_title(case, pdf_dir)
     if "repair_estimate" in case["documents"]:
-        total = case["repair_estimate_total"]
-        _pdf(os.path.join(pdf_dir, "repair_estimate.pdf"), "Collision Repair Estimate", [
-            ("Shop", "Capstone Auto Body, Austin TX"),
-            ("VIN", v["vin"]),
-            ("Frame straightening", "$4,200"),
-            ("Front suspension", "$2,850"),
-            ("Body panels + paint", "$6,900"),
-            ("Airbag module", "$2,300"),
-            ("Labor (38h)", "$3,550"),
-            ("TOTAL", f"${total:,}"),
-        ])
+        _build_estimate(case, pdf_dir)
 
 
 # ------------------------------------------------------------- statutes ---
