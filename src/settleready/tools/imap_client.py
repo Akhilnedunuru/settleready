@@ -58,7 +58,7 @@ class ImapEmailClient:
         """
         import email as _email
         import imaplib
-        imap = imaplib.IMAP4_SSL(self._imap_host)
+        imap = imaplib.IMAP4_SSL(self._imap_host, timeout=30)
         try:
             imap.login(self._address, self._password)
             imap.select("INBOX")
