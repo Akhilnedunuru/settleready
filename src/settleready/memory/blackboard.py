@@ -13,6 +13,8 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
+from settleready.memory.events import emit as _emit_event
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
     case_id TEXT PRIMARY KEY,
@@ -48,6 +50,7 @@ class CaseBlackboard:
 
     def __init__(self, db_path: str = "data/blackboard.db") -> None:
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        self._data_dir = os.path.dirname(os.path.abspath(db_path))
         self._db = sqlite3.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._db.commit()
@@ -64,6 +67,8 @@ class CaseBlackboard:
         self._db.commit()
         self.log(case_id, "created", "case_created",
                  {"loss_type": loss_type, "title_state": title_state})
+        _emit_event(self._data_dir, case_id, "case_created",
+                    {"loss_type": loss_type, "title_state": title_state})
 
     def set_stage(self, case_id: str, stage: str, event: str = "stage_transition",
                   details: dict | None = None) -> None:
@@ -73,6 +78,8 @@ class CaseBlackboard:
         )
         self._db.commit()
         self.log(case_id, stage, event, details or {})
+        _emit_event(self._data_dir, case_id, "stage",
+                    {"stage": stage, "event": event, **(details or {})})
 
     def get_case(self, case_id: str) -> dict | None:
         row = self._db.execute(

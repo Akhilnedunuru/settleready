@@ -3,11 +3,22 @@
 The pipeline is triggered by the intake watcher (email arrival), not by this
 UI — the workbench is where the senior analyst reviews what the agent prepared.
 
+Event-driven updates: the watcher/pipeline/agents emit events to
+data/events.jsonl (see settleready.memory.events). Each dynamic fragment ticks
+every 2s but only re-renders from cheap local reads; there is no blind polling
+timer and no IMAP polling from the UI. While a case's pipeline is running, the
+Packet tab shows a live activity panel streaming the agent's ReAct thinking.
+
 Tabs, in process order:
-  Emails        inbox threads + intake watcher status
-  Packet        assembled case file: fields, verification, cited legal note, ACV worksheet
+  Emails        claim emails (from the event log) + intake watcher status
+  Packet        live processing view + assembled case file
   Review        approve / return-with-reason-codes (feeds the return tally store)
   Audit trail   every stage transition + the return tally table
+
+Every submitted case is stored and tracked in the Case Blackboard SQLite DB
+(data/blackboard.db): the cases table (one row per case, current stage) plus
+an append-only audit log of every stage transition. The event log
+(data/events.jsonl) is the real-time activity feed over the same history.
 
 Run:  streamlit run src/settleready/ui/app.py   (from the repo root)
 """
@@ -16,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))  # .../src/settleready/ui
 # ui -> settleready -> src -> repo root (three levels up from APP_DIR)
@@ -27,9 +39,10 @@ import streamlit as st
 
 from settleready.agents.builder import build_packet
 from settleready.agents.reviewer import MAX_RETURNS, REASON_CODES, submit_review
+from settleready.memory import events
 from settleready.memory.blackboard import CaseBlackboard
 from settleready.memory.tally import ReturnTallyStore
-from settleready.pipeline import run_case
+from settleready.pipeline import is_running, run_case
 from settleready.tools.email_client import get_email_client
 
 
@@ -56,9 +69,13 @@ def _need_case() -> str | None:
     return _selected()
 
 
-@st.fragment(run_every=15)
+@st.fragment(run_every=2)
 def case_picker() -> None:
-    """Global case picker, always visible above the tabs, refreshed live."""
+    """Global case picker, always visible above the tabs.
+
+    Event-driven: re-queries the case registry every 2s (one cheap SQLite
+    read), so cases the watcher creates appear here ~instantly.
+    """
     ids = _case_ids()
     if not ids:
         st.info("📭 No cases yet — the intake watcher creates one automatically "
@@ -74,18 +91,86 @@ def case_picker() -> None:
         st.caption("↑ switch cases — every tab below follows this selection.")
 
 
-# ------------------------------------------------------------------ tabs ---
-# Packet/Review/Audit/Emails auto-refresh every 15s via st.fragment, so the UI
-# follows the watcher daemon live — no manual refresh needed. Widget state
-# (case picker, buttons) survives fragment reruns.
+# ------------------------------------------------------- event feed ---
+def _render_event(ev: dict) -> None:
+    """One event-log row, newest-first."""
+    ts = time.strftime("%H:%M:%S", time.localtime(ev["ts"]))
+    e, d = ev["event"], ev.get("detail") or {}
+    if e == "react":
+        st.markdown(f"`{ts}` 🧠 **iter {d.get('iteration')}** — {d.get('thought')}")
+        st.caption(f"🔧 `{d.get('action')}` → 👁 {d.get('observation')}")
+    elif e == "stage":
+        st.write(f"`{ts}` → stage `{d.get('stage')}`")
+    elif e == "email_received":
+        st.write(f"`{ts}` 📧 {d.get('subject')} — from {d.get('from')}")
+    elif e == "pipeline_started":
+        st.write(f"`{ts}` ▶ pipeline started")
+    elif e == "pipeline_finished":
+        st.write(f"`{ts}` ⏹ pipeline finished")
+    elif e == "pipeline_failed":
+        st.error(f"`{ts}` pipeline failed: {d.get('error')}")
+    elif e == "duplicate_skipped":
+        st.write(f"`{ts}` ⏭ duplicate claim email skipped")
+    elif e == "case_created":
+        st.write(f"`{ts}` 🆕 case created")
+    elif e == "documents_parsed":
+        st.write(f"`{ts}` 📄 parsed {d.get('count')} documents: "
+                 f"{', '.join(d.get('docs', []))}")
+    elif e == "verification_checks":
+        icons = {"pass": "✅", "fail": "❌", "conflict": "⚠️", "warn": "⚠️",
+                 "upfront": "🧠"}
+        for c in d.get("checks", []):
+            st.write(f"{icons.get(c['status'], '•')} `{c['status']}` {c['check']}")
+    elif e == "legal_research":
+        cites = ", ".join(d.get("citations", [])) or "none"
+        st.write(f"`{ts}` ⚖️ legal research — citations: {cites}")
 
 
-@st.fragment(run_every=15)
+def _render_event_feed(case_id: str, limit: int = 25) -> None:
+    evs = events.tail(DATA_DIR, case_id=case_id, limit=limit)
+    if not evs:
+        st.caption("No activity yet for this case.")
+    for ev in evs:
+        _render_event(ev)
+
+
+def live_panel() -> None:
+    """Live processing view for the selected case (called inside tab_packet's
+    fragment, so it ticks with the event log).
+
+    While the pipeline is actively running (marker file written at pipeline
+    start, removed at the end), this shows a running status box streaming the
+    agent's activity — documents parsed, ReAct Thought/Action/Observation,
+    verification checks — as the events arrive. Otherwise a quiet one-liner
+    with the current stage.
+    """
+    case_id = _selected()
+    if case_id is None:
+        return
+    bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
+    try:
+        case = bb.get_case(case_id) or {}
+    finally:
+        bb.close()
+    stage = case.get("stage", "?")
+    if is_running(DATA_DIR, case_id):
+        with st.status(f"Processing {case_id} — stage: {stage}",
+                       state="running", expanded=True):
+            st.caption("Live agent activity — streaming as it happens.")
+            _render_event_feed(case_id, limit=15)
+    else:
+        last = events.tail(DATA_DIR, case_id=case_id, limit=1)
+        last_ev = last[0]["event"] if last else "—"
+        st.caption(f"Stage `{stage}` · last activity: {last_ev} · "
+                   "this panel goes live while the pipeline runs.")
+
+
+@st.fragment(run_every=2)
 def tab_emails():
     st.header("Emails — intake")
-    st.caption("Claim emails arrive here. The intake watcher "
-               "`(python -m settleready.agents.intake watch)` picks them up and fires "
-               "the pipeline automatically — no manual run needed.")
+    st.caption("Event-driven: this list rebuilds from the watcher's event log — "
+               "a new claim email appears here the moment it's processed. "
+               "No inbox polling, no refresh timer.")
     try:
         from settleready.agents.intake import IntakeWatcher
         status = IntakeWatcher(data_dir=DATA_DIR).status()
@@ -93,29 +178,42 @@ def tab_emails():
                    f"{len(status['cases_triggered'])} cases auto-triggered.")
     except Exception:  # noqa: BLE001
         pass
-    mail = get_email_client(data_dir=DATA_DIR)
-    try:
-        from settleready.agents.intake import is_claim_email
-        inbox = [e for e in mail.poll_inbox() if is_claim_email(e)]
-        print(f"[emails tab] poll -> {len(inbox)} claim emails", flush=True)
-        st.caption(f"Last poll: {len(inbox)} claim email(s).")
-    except Exception as e:  # noqa: BLE001 — bad creds shouldn't kill the app
-        st.warning(
-            "Couldn't reach the email inbox: "
-            f"{e}\n\nIf you set `SETTLEREADY_EMAIL_SOURCE=gmail`, check `GMAIL_ADDRESS` / "
-            "`GMAIL_APP_PASSWORD` in your `.env` (app password needs 2-Step Verification on). "
-            "Remove that line to use the mock inbox.")
-        inbox = []
-    if not inbox:
+
+    claim_events = [e for e in events.tail(DATA_DIR, limit=100)
+                    if e["event"] == "email_received"]
+    if not claim_events:
         st.info("No claim emails yet — send one whose subject contains the case ID "
                 "(e.g. `Claim filed via mobile app — TL-2026-1045`) with the claim PDFs attached.")
-    for e in inbox:
-        with st.expander(f"{e.subject} — from {e.from_}"):
-            st.write(e.body)
-            if e.attachments:
-                st.caption("attachments: " + ", ".join(a["filename"] for a in e.attachments))
+    for ev in claim_events:
+        d = ev.get("detail") or {}
+        ts = time.strftime("%H:%M:%S", time.localtime(ev["ts"]))
+        with st.expander(f"{d.get('subject')} — {ts}"):
+            st.write(f"From: {d.get('from')}")
+            st.write(f"Case: `{ev.get('case_id')}`")
+            n_att = d.get("attachments", 0)
+            if n_att:
+                st.caption(f"{n_att} PDF attachment(s) saved to "
+                           f"`data/pdfs/{ev.get('case_id')}/`")
+            if d.get("body"):
+                st.write(d["body"])
+
+    if st.button("🔄 Check inbox now"):
+        # Manual IMAP peek only — the watcher owns continuous polling.
+        mail = get_email_client(data_dir=DATA_DIR)
+        try:
+            from settleready.agents.intake import is_claim_email
+            inbox = [e for e in mail.poll_inbox() if is_claim_email(e)]
+            st.success(f"Inbox check: {len(inbox)} claim email(s) waiting — "
+                       "the watcher will process them on its next poll.")
+        except Exception as e:  # noqa: BLE001 — bad creds shouldn't kill the app
+            st.warning(
+                "Couldn't reach the email inbox: "
+                f"{e}\n\nIf you set `SETTLEREADY_EMAIL_SOURCE=gmail`, check `GMAIL_ADDRESS` / "
+                "`GMAIL_APP_PASSWORD` in your `.env` (app password needs 2-Step Verification on). "
+                "Remove that line to use the mock inbox.")
     # Demo transport only: with real Gmail, replies arrive as real emails.
     selected = _selected()
+    mail = get_email_client(data_dir=DATA_DIR)
     if selected and hasattr(mail, "inject_inbound") and st.button("✉ Simulate customer reply"):
         mail.inject_inbound(
             to="claims@demo.local", from_="customer@example.com",
@@ -126,13 +224,14 @@ def tab_emails():
         st.rerun()
 
 
-@st.fragment(run_every=15)
+@st.fragment(run_every=2)
 def tab_packet():
     st.header("Case packet")
     case_id = _need_case()
     if case_id is None:
         return
-    st.caption("Auto-refreshes every 15s — follows the watcher live.")
+    live_panel()
+    st.divider()
     try:
         packet = build_packet(case_id, data_dir=DATA_DIR)
     except ValueError as e:
@@ -200,9 +299,11 @@ def tab_packet():
         st.write("_not computed_")
 
 
-@st.fragment(run_every=15)
+@st.fragment(run_every=2)
 def tab_review():
     st.header("Senior analyst review")
+    st.caption("Follows the event log — a finished pipeline or a new return "
+               "updates this tab within ~2s.")
     case_id = _need_case()
     if case_id is None:
         return
@@ -260,13 +361,14 @@ def tab_review():
                          "The loop stops here by design.")
 
 
-@st.fragment(run_every=15)
+@st.fragment(run_every=2)
 def tab_audit():
     st.header("Audit trail")
     case_id = _need_case()
     if case_id is None:
         return
-    st.caption("Auto-refreshes every 15s — follows the watcher live.")
+    st.caption("Follows the event log — new stage transitions appear within ~2s. "
+               "Every submitted case is tracked here from creation to decision.")
     bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
     log = bb.audit_log(case_id)
     bb.close()

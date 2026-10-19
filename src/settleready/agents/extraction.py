@@ -66,7 +66,8 @@ def _page_of_span(doc: dict, span: str) -> str:
     return "?"
 
 
-def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "") -> dict:
+def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
+                   data_dir: str | None = None) -> dict:
     """Run the ReAct extraction loop.
 
     Args:
@@ -74,6 +75,8 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "") ->
                        "pages": [{"page": 1, "text": "..."}, ...]}, ...]
         provider: an LLMProvider (defaults to get_provider()).
         case_id: for trace readability.
+        data_dir: if given, each Thought/Action/Observation step is emitted
+            to the event bus so the UI can stream the agent's thinking live.
 
     Returns:
         {"fields": {field: {"value", "confidence", "source", "span"}},
@@ -83,6 +86,12 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "") ->
     if provider is None:
         from settleready.llm.provider import get_provider
         provider = get_provider()
+
+    def _emit_react(step: dict, iteration: int) -> None:
+        if data_dir:
+            from settleready.memory.events import emit
+            emit(data_dir, case_id, "react",
+                 {"iteration": iteration, **step})
 
     docs = sorted(parsed_docs, key=lambda d: _DOC_PRIORITY.get(d["source"].split(".")[0], 9))
     state: dict = {}
@@ -98,6 +107,7 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "") ->
                 "action": "none",
                 "observation": "extraction complete",
             })
+            _emit_react(trace[-1], iteration)
             break
 
         thought = (f"Iteration {iteration}: still need {missing} "
@@ -144,6 +154,7 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "") ->
                        f"extracted/updated: {newly or 'none'}; "
                        f"still below threshold: {still_missing or 'none'}")
         trace.append({"thought": thought, "action": action, "observation": observation})
+        _emit_react(trace[-1], iteration)
 
     flags = [f for f in REQUIRED_FIELDS
              if f not in state or state[f]["confidence"] < CONFIDENCE_THRESHOLD]

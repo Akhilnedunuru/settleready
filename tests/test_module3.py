@@ -163,3 +163,55 @@ def test_no_comparables_fails_verification_gracefully(tmp_path):
     assert "no_comparables" in report["flags"]
     assert any(c["check"] == "valuation_data" and c["status"] == "fail"
                for c in report["checks"])
+
+
+def test_event_bus_roundtrip(tmp_path):
+    from settleready.memory import events
+    assert events.seq(str(tmp_path)) == 0
+    events.emit(str(tmp_path), "TL-1", "stage", {"stage": "extraction"})
+    events.emit(str(tmp_path), "TL-2", "email_received", {"subject": "hi"})
+    events.emit(str(tmp_path), "TL-1", "react", {"thought": "t"})
+    assert events.seq(str(tmp_path)) == 3
+    all_evs = events.tail(str(tmp_path))
+    assert [e["event"] for e in all_evs] == ["react", "email_received", "stage"]  # newest first
+    tl1 = events.tail(str(tmp_path), case_id="TL-1")
+    assert {e["event"] for e in tl1} == {"stage", "react"}
+    # emit never raises, even on garbage detail
+    events.emit(str(tmp_path), "TL-1", "x", {"bad": object()})
+
+
+def test_pipeline_emits_react_events(tmp_path):
+    import json
+    from settleready.data.seed import main as seed_main
+    from settleready.memory import events
+    from settleready.pipeline import run_case
+    seed_main(seed=42, out=str(tmp_path), num_cases=1)
+
+    class FakeProvider:
+        def complete(self, system, user, json_mode=False, max_tokens=0, temperature=0.0):
+            return json.dumps({"fields": {
+                f: {"value": "X", "confidence": 0.95, "span": "x"}
+                for f in ["vin", "mileage", "title_state", "policy_number",
+                          "holder_name", "loss_type", "loss_date", "lien_declared"]}})
+
+    run_case("TL-2026-1043", data_dir=str(tmp_path), provider=FakeProvider())
+    kinds = [e["event"] for e in events.tail(str(tmp_path), case_id="TL-2026-1043", limit=50)]
+    assert "pipeline_started" in kinds and "pipeline_finished" in kinds
+    assert "documents_parsed" in kinds and "verification_checks" in kinds
+    reacts = [e for e in events.tail(str(tmp_path), case_id="TL-2026-1043", limit=50)
+              if e["event"] == "react"]
+    assert reacts and all("thought" in r["detail"] for r in reacts)
+
+
+def test_is_running_marker_lifecycle(tmp_path):
+    import time
+    from settleready.pipeline import _running_marker, is_running
+    assert not is_running(str(tmp_path), "TL-1")
+    os.makedirs(os.path.join(str(tmp_path), "running"), exist_ok=True)
+    with open(_running_marker(str(tmp_path), "TL-1"), "w") as f:
+        f.write(str(time.time()))
+    assert is_running(str(tmp_path), "TL-1")
+    # stale markers don't count as running
+    old = time.time() - 9999
+    os.utime(_running_marker(str(tmp_path), "TL-1"), (old, old))
+    assert not is_running(str(tmp_path), "TL-1")

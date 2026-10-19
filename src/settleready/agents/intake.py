@@ -24,6 +24,7 @@ import os
 import time
 
 from settleready.memory.blackboard import CaseBlackboard
+from settleready.memory.events import emit as _emit_event
 from settleready.tools.email_client import CASE_ID_RE, EmailRecord, get_email_client
 
 REWORK_STAGES = ("needs_info", "analyst_rework")  # waiting on the customer/analyst
@@ -142,9 +143,15 @@ class IntakeWatcher:
         if route_claim(email) != "total_loss" or not case_id:
             return {"email": email.id, "action": "routed_other",
                     "detail": f"subject={email.subject!r}"}
+        _emit_event(self._data_dir, case_id, "email_received",
+                    {"from": email.from_, "subject": email.subject,
+                     "attachments": len(email.attachments or []),
+                     "body": (email.body or "")[:400]})
         # One automatic trigger per case ID — duplicate claim emails don't
         # re-fire the pipeline (manual re-runs go through the Review tab).
         if case_id in self._load_state()["cases_triggered"]:
+            _emit_event(self._data_dir, case_id, "duplicate_skipped",
+                        {"email": email.id})
             return {"email": email.id, "action": "duplicate_claim",
                     "case_id": case_id,
                     "detail": "pipeline already triggered for this case"}
