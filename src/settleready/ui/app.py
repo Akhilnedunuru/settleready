@@ -78,7 +78,8 @@ def tab_emails():
         pass
     mail = get_email_client(data_dir=DATA_DIR)
     try:
-        inbox = mail.poll_inbox()
+        from settleready.agents.intake import is_claim_email
+        inbox = [e for e in mail.poll_inbox() if is_claim_email(e)]
     except Exception as e:  # noqa: BLE001 — bad creds shouldn't kill the app
         st.warning(
             "Couldn't reach the email inbox: "
@@ -87,7 +88,8 @@ def tab_emails():
             "Remove that line to use the mock inbox.")
         inbox = []
     if not inbox:
-        st.info("Inbox is empty — run scripts/seed.sh to seed the demo claim email.")
+        st.info("No claim emails yet — send one whose subject contains the case ID "
+                "(e.g. `Claim filed via mobile app — TL-2026-1045`) with the claim PDFs attached.")
     for e in inbox:
         with st.expander(f"{e.subject} — from {e.from_}"):
             st.write(e.body)

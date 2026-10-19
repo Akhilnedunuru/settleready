@@ -15,6 +15,12 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 
+# IMAP pre-filter: only subjects carrying a case ID (TL-YYYY-NNNN) are fetched.
+# A superset of the extract_case_id regex — nothing the pipeline could accept
+# is ever excluded by this.
+CASE_SUBJECT_HINT = "TL-"
+
+
 @dataclass
 class EmailRecord:
     id: str

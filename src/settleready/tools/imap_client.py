@@ -24,7 +24,7 @@ from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
-from settleready.tools.email_client import EmailRecord
+from settleready.tools.email_client import CASE_SUBJECT_HINT, EmailRecord
 
 
 def _decode(value: str | None) -> str:
@@ -48,15 +48,18 @@ class ImapEmailClient:
 
     # -- EmailClient protocol --------------------------------------------------
     def poll_inbox(self) -> list[EmailRecord]:
-        """Fetch all messages, oldest first. Dedup is the watcher's local
-        intake_state.json — NOT the IMAP \\Seen flag — so reading an email in
-        a mail client never hides it from the watcher."""
+        """Fetch messages whose subject carries a case ID, oldest first.
+
+        The SUBJECT pre-filter runs on the server, so unrelated mail (Google
+        notifications, etc.) is never even downloaded. The watcher's local
+        intake_state.json remains the dedup source of truth — reading an email
+        in a mail client never hides it from the watcher."""
         import imaplib
         imap = imaplib.IMAP4_SSL(self._imap_host)
         try:
             imap.login(self._address, self._password)
             imap.select("INBOX")
-            _, data = imap.search(None, "ALL")
+            _, data = imap.search(None, "SUBJECT", CASE_SUBJECT_HINT)
             records = []
             for num in data[0].split():
                 _, msg_data = imap.fetch(num, "(RFC822)")

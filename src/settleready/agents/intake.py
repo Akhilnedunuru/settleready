@@ -50,6 +50,13 @@ def is_reply(email: EmailRecord) -> bool:
     return (email.subject or "").strip().lower().startswith("re:")
 
 
+def is_claim_email(email: EmailRecord) -> bool:
+    """Does this email belong to the pipeline? The contract is: the subject
+    carries a case ID (TL-YYYY-NNNN) — for new claims and for replies alike.
+    Everything else (Google notifications, newsletters, ...) is ignored."""
+    return extract_case_id(email) is not None
+
+
 class IntakeWatcher:
     """Polls the inbox and fires the pipeline. `run_fn` is injectable for tests."""
 
@@ -113,6 +120,10 @@ class IntakeWatcher:
                 if email.id in seen:
                     continue
                 self._mark_seen(email.id)
+                if not is_claim_email(email):
+                    actions.append({"email": email.id, "action": "ignored",
+                                    "detail": f"no case ID in subject={email.subject!r}"})
+                    continue
                 if is_reply(email):
                     actions.append(self._handle_reply(email, bb))
                 else:

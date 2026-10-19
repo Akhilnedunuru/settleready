@@ -66,13 +66,29 @@ def test_new_claim_triggers_pipeline_once(tmp_path):
     assert calls == ["TL-2026-1045"]
 
 
-def test_non_claim_email_routed_other(tmp_path):
+def test_non_claim_email_ignored(tmp_path):
     calls = []
     _mail(tmp_path, subject="Office lunch menu")
+    _mail(tmp_path, subject="Security alert")  # Google-style system mail
     w = _watcher(tmp_path, calls)
     actions = w.poll_once()
-    assert actions[0]["action"] == "routed_other"
+    assert [a["action"] for a in actions] == ["ignored", "ignored"]
     assert calls == []
+    # ignored mail is still marked seen — never re-examined
+    assert w.poll_once() == []
+
+
+def test_is_claim_email_predicate():
+    from settleready.agents.intake import is_claim_email
+    from settleready.tools.email_client import EmailRecord
+    def rec(subject):
+        return EmailRecord(id="x", to="t", from_="f", subject=subject,
+                           body="", ts="", direction="inbound", attachments=[])
+    assert is_claim_email(rec("Claim filed via mobile app — TL-2026-1045"))
+    assert is_claim_email(rec("Fwd: Claim filed via mobile app — TL-2026-1045"))
+    assert is_claim_email(rec("Re: claim documents — TL-2026-1043"))
+    assert not is_claim_email(rec("Security alert"))
+    assert not is_claim_email(rec("2-Step Verification turned on"))
 
 
 def test_customer_reply_retriggers_waiting_case(tmp_path):
@@ -95,7 +111,7 @@ def test_customer_reply_retriggers_waiting_case(tmp_path):
 
 def test_reply_to_unknown_case_logged_not_crashed(tmp_path):
     calls = []
-    _mail(tmp_path, subject="Re: hello — no case here")
+    _mail(tmp_path, subject="Re: claim documents — TL-2026-9999")
     w = _watcher(tmp_path, calls)
     actions = w.poll_once()
     assert actions[0]["action"] == "reply_uncorrelated"
