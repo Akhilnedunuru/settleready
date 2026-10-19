@@ -140,3 +140,26 @@ def test_seed_env_only(tmp_path):
     import json
     title_db = json.load(open(tmp_path / "title_db.json"))
     assert len(title_db) == 3 and all(v["state"] in ("TX", "GA") for v in title_db.values())
+
+
+def test_no_comparables_fails_verification_gracefully(tmp_path):
+    """A new case ID with no market data routes to needs_info — never crashes."""
+    import json
+    from settleready.agents.verification import verify_case
+    # minimal mock DBs: title/lien/CLUE resolve, but no comps for this case
+    (tmp_path / "title_db.json").write_text(json.dumps(
+        {"VIN1": {"state": "TX", "brands": []}}))
+    (tmp_path / "liens.json").write_text(json.dumps({"VIN1": None}))
+    (tmp_path / "clue.json").write_text(json.dumps({"P1": []}))
+    (tmp_path / "comps.json").write_text(json.dumps({}))
+    fields = {n: {"value": v, "confidence": 0.95, "source": "claim_form.pdf"}
+              for n, v in [("vin", "VIN1"), ("title_state", "TX"),
+                           ("policy_number", "P1"), ("lien_declared", False),
+                           ("loss_type", "theft")]}
+    report = verify_case("TL-2026-9999", fields,
+                         ["claim_form", "police_report", "title"],
+                         data_dir=str(tmp_path))
+    assert report["passed"] is False
+    assert "no_comparables" in report["flags"]
+    assert any(c["check"] == "valuation_data" and c["status"] == "fail"
+               for c in report["checks"])

@@ -16,7 +16,12 @@ from __future__ import annotations
 import os
 
 from settleready.memory.tally import ReturnTallyStore
-from settleready.tools.mock_dbs import MockClueReports, MockLienholderAPI, MockStateTitleDB
+from settleready.tools.mock_dbs import (
+    MockClueReports,
+    MockLienholderAPI,
+    MockStateTitleDB,
+    MockValuationService,
+)
 
 REQUIRED_DOCS = {
     "theft": ["claim_form", "police_report", "title"],
@@ -114,6 +119,18 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
     else:
         checks.append({"check": "completeness", "status": "pass",
                        "detail": f"All required documents present: {required}"})
+
+    # 5. Valuation data: the ACV stage needs comparable listings. A real
+    # valuation API can return zero comps (rare vehicle, thin market) — that
+    # must route to analyst follow-up, not crash the pipeline.
+    comps = MockValuationService(data_dir).comparables(case_id)
+    if not comps:
+        checks.append({"check": "valuation_data", "status": "fail",
+                       "detail": "No comparable listings found for valuation"})
+        flags.append("no_comparables")
+    else:
+        checks.append({"check": "valuation_data", "status": "pass",
+                       "detail": f"{len(comps)} comparable listings available"})
 
     passed = not any(c["status"] in ("fail", "conflict") for c in checks)
     return {"case_id": case_id, "checks": checks, "conflicts": conflicts,
