@@ -245,27 +245,33 @@ def _generated_case(rng: random.Random, i: int) -> dict:
 # ---------------------------------------------------------------- PDFs ---
 
 # ------------------------------------------------------- PDF forms ---
-# Realistic claim documents, modeled on real-world forms (ACORD 2 Automobile
+# Realistic claim documents modeled on real-world forms (ACORD 2 Automobile
 # Loss Notice, Texas CR-3 crash report, state certificate of title, body-shop
-# repair estimate). Layouts are original; all data is synthetic.
+# repair estimate): field grids with boxed inputs, checkboxes, and form flow.
+# Layouts are original; all data is synthetic.
 
 _BANNER_PDF = BANNER.replace("\u2014", "-")
+_FORM_W = 7.5
 
 
 def _form_styles() -> dict:
     return {
         "doctitle": ParagraphStyle("doctitle", fontName="Helvetica-Bold",
-                                   fontSize=15, leading=18, spaceAfter=2),
-        "docsub": ParagraphStyle("docsub", fontSize=9, leading=11, spaceAfter=6,
+                                   fontSize=15, leading=18, spaceAfter=1),
+        "docsub": ParagraphStyle("docsub", fontSize=9, leading=11, spaceAfter=4,
                                  textColor=colors.HexColor("#555555")),
-        "section": ParagraphStyle("section", fontName="Helvetica-Bold",
-                                  fontSize=10, leading=13, textColor=colors.white),
-        "k": ParagraphStyle("k", fontName="Helvetica-Bold", fontSize=9, leading=12),
-        "v": ParagraphStyle("v", fontSize=9, leading=12),
+        "flabel": ParagraphStyle("flabel", fontName="Helvetica-Bold", fontSize=7,
+                                 leading=9, textColor=colors.HexColor("#333333")),
+        "fval": ParagraphStyle("fval", fontSize=9, leading=12),
+        "sechead": ParagraphStyle("sechead", fontName="Helvetica-Bold", fontSize=9,
+                                  leading=11, spaceAfter=1,
+                                  textColor=colors.HexColor("#1a1a1a")),
         "body": ParagraphStyle("body", fontSize=9, leading=13, spaceAfter=6),
         "small": ParagraphStyle("small", fontSize=7.5, leading=10, spaceAfter=4,
                                 textColor=colors.HexColor("#555555")),
-        "center": ParagraphStyle("center", fontSize=9, leading=12, alignment=1),
+        "cb": ParagraphStyle("cb", fontName="Helvetica-Bold", fontSize=10,
+                             leading=12, alignment=1),
+        "cblab": ParagraphStyle("cblab", fontSize=8, leading=11),
     }
 
 
@@ -281,42 +287,96 @@ def _finish_doc(path: str, story: list) -> None:
         story, onFirstPage=_banner, onLaterPages=_banner)
 
 
-def _section_bar(story: list, styles: dict, text: str) -> None:
-    t = Table([[Paragraph(text.upper(), styles["section"])]], colWidths=[7.5 * inch])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#2f3e55")),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+def _field_box(styles: dict, label: str, value, width_in: float):
+    """One form field: small label above a bordered input box."""
+    txt = str(value) if str(value) else "&nbsp;"
+    inner = Table([
+        [Paragraph(label.upper(), styles["flabel"])],
+        [Paragraph(txt, styles["fval"])],
+    ], colWidths=[width_in * inch])
+    inner.setStyle(TableStyle([
+        ("BOX", (0, 1), (0, 1), 0.7, colors.HexColor("#222222")),
+        ("TOPPADDING", (0, 1), (0, 1), 5),
+        ("BOTTOMPADDING", (0, 1), (0, 1), 5),
+        ("LEFTPADDING", (0, 1), (0, 1), 6),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 2),
+        ("LEFTPADDING", (0, 0), (0, 0), 1),
     ]))
-    story += [Spacer(1, 0.14 * inch), t]
+    return inner
 
 
-def _fields(story: list, styles: dict, rows: list[tuple[str, str]],
-            label_w: float = 2.3 * inch) -> None:
-    tr = [[Paragraph(f"<b>{k}</b>", styles["k"]), Paragraph(str(v), styles["v"])]
-          for k, v in rows]
-    t = Table(tr, colWidths=[label_w, 7.5 * inch - label_w])
+def _checkbox(styles: dict, checked: bool):
+    t = Table([[Paragraph("<b>X</b>" if checked else "&nbsp;", styles["cb"])]],
+              colWidths=[0.24 * inch], rowHeights=[0.24 * inch])
     t.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#999999")),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef1f5")),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), 0.9, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
     ]))
+    return t
+
+
+def _yn_field(styles: dict, label: str, is_yes: bool, width_in: float):
+    """Yes/No field rendered as real checkboxes."""
+    opts = Table([
+        [_checkbox(styles, is_yes), Paragraph("YES", styles["cblab"]),
+         _checkbox(styles, not is_yes), Paragraph("NO", styles["cblab"])],
+    ], colWidths=[0.24 * inch, 0.45 * inch, 0.24 * inch, 0.45 * inch])
+    opts.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 2)]))
+    inner = Table([
+        [Paragraph(label.upper(), styles["flabel"])],
+        [opts],
+    ], colWidths=[width_in * inch])
+    inner.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 1),
+                               ("BOTTOMPADDING", (0, 0), (0, 0), 2)]))
+    return inner
+
+
+def _form_grid(story: list, styles: dict, *rows) -> None:
+    """Lay out form fields in rows. Each row is a list of
+    (label, value, width_inches) tuples; widths in a row must sum to 7.5.
+    A bool value renders as YES/NO checkboxes."""
+    for row in rows:
+        cells, widths = [], []
+        for label, value, w in row:
+            widths.append(w * inch)
+            if isinstance(value, bool):
+                cells.append(_yn_field(styles, label, value, w))
+            else:
+                cells.append(_field_box(styles, label, value, w))
+        t = Table([cells], colWidths=widths)
+        t.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(t)
+
+
+def _form_section(story: list, styles: dict, text: str) -> None:
+    story.append(Spacer(1, 0.14 * inch))
+    story.append(Paragraph(text.upper(), styles["sechead"]))
+    rule = Table([[""]], colWidths=[_FORM_W * inch])
+    rule.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.8,
+                               colors.HexColor("#1a1a1a"))]))
+    story.append(rule)
+    story.append(Spacer(1, 0.04 * inch))
+
+
+def _doc_header(story: list, styles: dict, title: str, sub: str,
+                right_label: str, right_value: str) -> None:
+    left = [Paragraph(title, styles["doctitle"]),
+            Paragraph(sub, styles["docsub"])]
+    right = _field_box(styles, right_label, right_value, 2.2)
+    t = Table([[left, right]], colWidths=[5.3 * inch, 2.2 * inch])
+    t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                           ("LEFTPADDING", (1, 0), (1, 0), 8)]))
     story.append(t)
-
-
-def _sig_block(story: list, styles: dict, labels: list[str]) -> None:
-    cells = []
-    for lab in labels:
-        cells += [Paragraph(f"X{'_' * 34}", styles["v"]),
-                  Paragraph(lab, styles["small"])]
-    t = Table([cells], colWidths=[2.5 * inch] * len(labels))
-    t.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 6)]))
-    story += [Spacer(1, 0.2 * inch), t]
-
+    story.append(Spacer(1, 0.08 * inch))
 
 _OFFICERS = ["J. Martinez", "R. Thompson", "K. Okafor", "D. Nguyen", "S. Patel"]
 
@@ -331,183 +391,204 @@ def _plate(rng: random.Random, state: str) -> str:
 
 
 def _build_fnol(case: dict, pdf_dir: str) -> None:
-    """First Notice of Loss - Automobile (ACORD 2 style)."""
+    """First Notice of Loss - Automobile (ACORD 2 Automobile Loss Notice style)."""
     v, p, loss = case["vehicle"], case["policy"], case["loss"]
     rng = _case_rng(case)
     styles = _form_styles()
-    city, zipc = CITIES[case["title_state"]]
-    holder_addr = f"{rng.choice(STREETS)}, {city}, {case['title_state']} {zipc}"
+    st = case["title_state"]
+    city, zipc = CITIES[st]
+    holder_addr = f"{rng.choice(STREETS)}, {city}, {st} {zipc}"
     phone = f"(555) 01{rng.randint(0, 9)}-{rng.randint(1000, 9999):04d}"
-    plate = _plate(rng, case["title_state"])
-    loss_time = f"{rng.randint(1, 12)}:{rng.randint(10, 59):02d} {rng.choice(['AM', 'PM'])}"
-    driver = "Unknown - vehicle stolen" if case["loss_type"] == "theft" else p["holder"]
+    plate = _plate(rng, st)
+    loss_time = f"{rng.randint(1, 12)}:{rng.randint(10, 59):02d}"
+    ampm = rng.choice(["AM", "PM"])
+    driver = ("Unknown - vehicle stolen" if case["loss_type"] == "theft"
+              else f"{p['holder']}, {holder_addr}")
 
-    story = [Paragraph("FIRST NOTICE OF LOSS - AUTOMOBILE", styles["doctitle"]),
-             Paragraph("Capstone Mutual Insurance Company &nbsp;|&nbsp; Auto Claims Department",
-                       styles["docsub"])]
-    _section_bar(story, styles, "Report information")
-    _fields(story, styles, [
-        ("Date reported", loss["date"]),
-        ("Reported by", f"{p['holder']} (Policyholder)"),
-        ("Report method", "Mobile app"),
-        ("Claim reference no.", case["case_id"]),
-    ])
-    _section_bar(story, styles, "Policy information")
-    _fields(story, styles, [
-        ("Company", "Capstone Mutual Insurance Company"),
-        ("Policy number", p["number"]),
-        ("Policy type", "Personal Auto"),
-        ("Policy period", "01/01/2026 to 12/31/2026"),
-    ])
-    _section_bar(story, styles, "Insured")
-    _fields(story, styles, [
-        ("Name", p["holder"]),
-        ("Address", holder_addr),
-        ("Phone", phone),
-    ])
-    _section_bar(story, styles, "Loss details")
-    _fields(story, styles, [
-        ("Date of loss", loss["date"]),
-        ("Time of loss", loss_time),
-        ("Loss type", case["loss_type"].upper()),
-        ("Location of loss", f"{city}, {case['title_state']}"),
-        ("Description of loss", loss["description"]),
-        ("Authority contacted", loss["agency"]),
-        ("Authority report no.", loss["police_report_no"]),
-    ])
-    _section_bar(story, styles, "Insured vehicle")
-    _fields(story, styles, [
-        ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
-        ("Vehicle Identification Number (VIN)", v["vin"]),
-        ("License plate", plate),
-        ("Mileage", f"{v['mileage']:,}"),
-        ("Owner", p["holder"]),
-        ("Driver at time of loss", driver),
-    ])
-    _section_bar(story, styles, "Lienholder")
-    lien = case["lien"]
-    _fields(story, styles, [
-        ("Is there a lienholder on this vehicle?",
-         "YES" if case["declared_lien"] else "NO"),
-        ("Lienholder name", lien["holder"] if case["declared_lien"] and lien else "N/A"),
-    ])
+    story = []
+    _doc_header(story, styles, "AUTOMOBILE LOSS NOTICE",
+                "Capstone Mutual Insurance Company - Auto Claims",
+                "Claim no.", case["case_id"])
+
+    _form_section(story, styles, "Agency / Company")
+    _form_grid(story, styles,
+               [("Agency", "Capstone Mutual Agency #0417", 3.2),
+                ("Phone (A/C, No)", "(512) 555-0148", 2.1),
+                ("NAIC code", "12345", 2.2)])
+
+    _form_section(story, styles, "Policy")
+    _form_grid(story, styles,
+               [("Policy number", p["number"], 2.5),
+                ("Policy type", "Personal Auto", 2.0),
+                ("Effective date", "01/01/2026", 1.5),
+                ("Expiration date", "12/31/2026", 1.5)])
+
+    _form_section(story, styles, "Insured")
+    _form_grid(story, styles,
+               [("Insured name", p["holder"], 4.0),
+                ("Residence phone", phone, 3.5)],
+               [("Insured address", holder_addr, 7.5)])
+
+    _form_section(story, styles, "Loss")
+    _form_grid(story, styles,
+               [("Date of loss", loss["date"], 2.0),
+                ("Time of loss", loss_time, 1.7),
+                ("AM / PM", ampm, 1.3),
+                ("Loss type", case["loss_type"].upper(), 2.5)],
+               [("Location of loss", f"{city}, {st}", 7.5)],
+               [("Authority contacted", loss["agency"], 4.5),
+                ("Report #", loss["police_report_no"], 3.0)],
+               [("Description of loss", loss["description"], 7.5)])
+
+    _form_section(story, styles, "Policy information")
+    _form_grid(story, styles,
+               [("Bodily injury per person", "$100,000", 1.875),
+                ("Bodily injury per accident", "$300,000", 1.875),
+                ("Property damage", "$100,000", 1.875),
+                ("Deductible", "$500", 1.875)])
+
+    _form_section(story, styles, "Insured vehicle")
+    _form_grid(story, styles,
+               [("Year", str(v["year"]), 1.0),
+                ("Make", v["make"], 1.8),
+                ("Model", f"{v['model']} {v['trim']}", 2.2),
+                ("Plate", plate, 1.5),
+                ("State", st, 1.0)],
+               [("V.I.N.", v["vin"], 5.0),
+                ("Mileage", f"{v['mileage']:,}", 2.5)],
+               [("Owner name & address", f"{p['holder']} - {holder_addr}", 5.0),
+                ("Lienholder?", bool(case["declared_lien"]), 2.5)],
+               [("Driver name & address", driver, 7.5)])
+
+    _form_section(story, styles, "Remarks")
+    _form_grid(story, styles,
+               [("Remarks",
+                 "Total loss suspected. Assigned to Auto Physical Damage unit.", 7.5)])
     story.append(Paragraph(
         "Fraud notice: Any person who knowingly presents a false or fraudulent claim "
         "for payment of a loss is subject to criminal and civil penalties.",
         styles["small"]))
-    _sig_block(story, styles, ["Signature of insured", "Date"])
+
+    _form_section(story, styles, "Signatures")
+    _form_grid(story, styles,
+               [("Reported by", p["holder"], 2.5),
+                ("Reported to", "Auto Claims Dept", 2.5),
+                ("Signature of insured", "", 2.5)])
     _finish_doc(os.path.join(pdf_dir, "claim_form.pdf"), story)
 
-
 def _build_police_report(case: dict, pdf_dir: str) -> None:
-    """Police report. Theft/fire get an incident report; collision gets a
-    CR-3 style crash report."""
+    """Police report: CR-3 style crash report for collisions, incident/offense
+    report for theft and fire."""
     v, p, loss = case["vehicle"], case["policy"], case["loss"]
     rng = _case_rng(case)
     styles = _form_styles()
-    city, zipc = CITIES[case["title_state"]]
-    holder_addr = f"{rng.choice(STREETS)}, {city}, {case['title_state']} {zipc}"
-    plate = _plate(rng, case["title_state"])
+    st = case["title_state"]
+    city, zipc = CITIES[st]
+    counties = {"TX": "Travis", "GA": "Fulton", "CA": "Fresno"}
+    holder_addr = f"{rng.choice(STREETS)}, {city}, {st} {zipc}"
+    plate = _plate(rng, st)
     officer = rng.choice(_OFFICERS)
-    badge = f"{rng.randint(1000, 9999)}"
-    loss_kind = case["loss_type"]
+    badge = str(rng.randint(1000, 9999))
+    kind = case["loss_type"]
+    when = f"{rng.randint(1, 12)}:{rng.randint(10, 59):02d} {rng.choice(['AM', 'PM'])}"
+    ymm = f"{v['year']} {v['make']} {v['model']} {v['trim']}"
 
-    if loss_kind == "theft":
-        title, sub = "INCIDENT / OFFENSE REPORT", "Stolen Motor Vehicle"
-    elif loss_kind == "fire":
-        title, sub = "INCIDENT REPORT", "Vehicle Fire"
-    else:
-        title, sub = "PEACE OFFICER'S CRASH REPORT", "Motor Vehicle Traffic Crash"
-    story = [Paragraph(title, styles["doctitle"]),
-             Paragraph(f"{loss['agency']} &nbsp;|&nbsp; {sub}", styles["docsub"]),
-             Paragraph(f"<b>Report no. {loss['police_report_no']}</b>", styles["center"])]
-
-    if loss_kind == "collision":
-        _section_bar(story, styles, "Crash identification")
-        _fields(story, styles, [
-            ("Crash date", loss["date"]),
-            ("Crash time", f"{rng.randint(1, 12)}:{rng.randint(10, 59):02d} {rng.choice(['AM', 'PM'])}"),
-            ("Location", f"{rng.choice(STREETS)}, {city}, {case['title_state']}"),
-            ("Weather", "Clear"), ("Road condition", "Dry"), ("Light", "Daylight"),
-        ])
-        _section_bar(story, styles, "Unit 1 - Driver")
-        _fields(story, styles, [
-            ("Driver name", p["holder"]),
-            ("Driver license no.", f"{case['title_state']}{rng.randint(10000000, 99999999)}"),
-            ("Address", holder_addr),
-        ])
-        _section_bar(story, styles, "Unit 1 - Vehicle")
-        _fields(story, styles, [
-            ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
-            ("Color", v["color"]),
-            ("Vehicle Identification Number (VIN)", v["vin"]),
-            ("License plate", plate),
-            ("Insurance company", "Capstone Mutual Insurance Company"),
-            ("Policy number", p["number"]),
-        ])
-        _section_bar(story, styles, "Injury / EMS")
-        _fields(story, styles, [
-            ("Injury severity (KABCO)", "N - No apparent injury"),
-            ("EMS transport", "Not transported"),
-        ])
-        _section_bar(story, styles, "Contributing factors")
-        story.append(Paragraph(
-            "Unit 1: Failed to control speed. Single vehicle departed the roadway "
-            "and struck a guardrail.", styles["body"]))
-    else:
-        _section_bar(story, styles, "Incident information")
-        offense = ("Theft of Motor Vehicle" if loss_kind == "theft"
-                   else "Vehicle Fire")
-        _fields(story, styles, [
-            ("Offense / incident", offense),
-            ("Date occurred", loss["date"]),
-            ("Date reported", loss["date"]),
-            ("Location of occurrence",
-             f"{rng.choice(STREETS)}, {city}, {case['title_state']}"),
-        ])
-        _section_bar(story, styles, "Vehicle involved")
-        _fields(story, styles, [
-            ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
-            ("Color", v["color"]),
-            ("Vehicle Identification Number (VIN)", v["vin"]),
-            ("License plate", plate),
-            ("Odometer", f"{v['mileage']:,}"),
-            ("Owner", f"{p['holder']} - {holder_addr}"),
-        ])
-        if loss_kind == "theft":
-            _section_bar(story, styles, "Recovery / NCIC")
-            _fields(story, styles, [
-                ("Vehicle recovered", "NO - not recovered at time of report"),
-                ("NCIC entry", f"Entered as stolen - NIC #{rng.choice('ABCDEFGHJKLMNPRSTUVWXYZ')}{rng.randint(100000000, 999999999)}"),
-            ])
-
-    _section_bar(story, styles, "Narrative")
-    if loss_kind == "theft":
-        narrative = (f"Complainant {p['holder']} states the {v['year']} {v['make']} "
-                     f"{v['model']} (VIN {v['vin']}) was parked at the location above "
-                     f"and was discovered missing on {loss['date']}. {loss['description']} "
-                     f"Vehicle entered into NCIC as stolen. Investigation continuing.")
-    elif loss_kind == "fire":
-        narrative = (f"Officers responded to a vehicle fire involving a {v['year']} "
-                     f"{v['make']} {v['model']} (VIN {v['vin']}) owned by {p['holder']}. "
-                     f"{loss['description']} Fire department extinguished the fire; "
-                     f"vehicle sustained total burn damage and was released to the owner.")
-    else:
-        narrative = (f"Unit 1, driven by {p['holder']}, was traveling on the roadway above "
-                     f"when the driver failed to control speed and the {v['year']} {v['make']} "
-                     f"{v['model']} (VIN {v['vin']}) departed the roadway and struck a "
-                     f"guardrail. {loss['description']} No apparent injuries at the scene. "
+    story = []
+    if kind == "collision":
+        _doc_header(story, styles, "PEACE OFFICER'S CRASH REPORT",
+                    f"{loss['agency']} - Traffic Division",
+                    "Report no.", loss["police_report_no"])
+        _form_section(story, styles, "Crash identification")
+        _form_grid(story, styles,
+                   [("Crash date", loss["date"], 1.8),
+                    ("Crash time", when, 1.7),
+                    ("City", city, 2.0),
+                    ("County", counties[st], 2.0)],
+                   [("Location", f"{rng.choice(STREETS)}, {city}, {st}", 7.5)],
+                   [("Weather", "Clear", 1.875),
+                    ("Road surface", "Dry", 1.875),
+                    ("Light condition", "Daylight", 1.875),
+                    ("Traffic control", "None", 1.875)])
+        _form_section(story, styles, "Unit 1 - Driver")
+        _form_grid(story, styles,
+                   [("Driver name", p["holder"], 3.2),
+                    ("Driver license no.",
+                     f"{st}{rng.randint(10000000, 99999999)}", 2.8),
+                    ("DL state", st, 1.5)],
+                   [("Driver address", holder_addr, 7.5)])
+        _form_section(story, styles, "Unit 1 - Vehicle")
+        _form_grid(story, styles,
+                   [("Year", str(v["year"]), 1.0),
+                    ("Make", v["make"], 1.6),
+                    ("Model", f"{v['model']} {v['trim']}", 2.0),
+                    ("Color", v["color"], 1.4),
+                    ("Plate", plate, 1.5)],
+                   [("V.I.N.", v["vin"], 5.0),
+                    ("Plate state", st, 2.5)],
+                   [("Insurance company", "Capstone Mutual Insurance Company", 4.5),
+                    ("Policy #", p["number"], 3.0)])
+        _form_section(story, styles, "Injury / EMS")
+        _form_grid(story, styles,
+                   [("Injured?", False, 2.5),
+                    ("EMS transport", "Not transported", 2.5),
+                    ("Severity (KABCO)", "N - No apparent injury", 2.5)])
+        _form_section(story, styles, "Contributing factors")
+        _form_grid(story, styles,
+                   [("Unit 1 contributing factor",
+                     "Failed to control speed", 7.5)])
+        narrative = (f"Unit 1, driven by {p['holder']}, was traveling on the roadway "
+                     f"above when the driver failed to control speed and the {ymm} "
+                     f"(VIN {v['vin']}) departed the roadway and struck a guardrail. "
+                     f"{loss['description']} No apparent injuries at the scene. "
                      f"Vehicle towed due to disabling damage.")
-    story.append(Paragraph(narrative, styles["body"]))
+    else:
+        offense = ("Theft of Motor Vehicle" if kind == "theft" else "Vehicle Fire")
+        _doc_header(story, styles, "INCIDENT / OFFENSE REPORT",
+                    f"{loss['agency']} - {offense}",
+                    "Report no.", loss["police_report_no"])
+        _form_section(story, styles, "Incident information")
+        _form_grid(story, styles,
+                   [("Offense", offense, 3.5),
+                    ("Date occurred", loss["date"], 2.0),
+                    ("Date reported", loss["date"], 2.0)],
+                   [("Location of occurrence",
+                     f"{rng.choice(STREETS)}, {city}, {st}", 7.5)])
+        _form_section(story, styles, "Vehicle involved")
+        _form_grid(story, styles,
+                   [("Year", str(v["year"]), 1.0),
+                    ("Make", v["make"], 1.6),
+                    ("Model", f"{v['model']} {v['trim']}", 2.0),
+                    ("Color", v["color"], 1.4),
+                    ("Plate", plate, 1.5)],
+                   [("V.I.N.", v["vin"], 5.0),
+                    ("Odometer", f"{v['mileage']:,}", 2.5)],
+                   [("Owner name & address",
+                     f"{p['holder']} - {holder_addr}", 7.5)])
+        if kind == "theft":
+            _form_section(story, styles, "Recovery")
+            nic = (rng.choice("ABCDEFGHJKLMNPRSTUVWXYZ")
+                   + str(rng.randint(100000000, 999999999)))
+            _form_grid(story, styles,
+                       [("Vehicle recovered?", False, 2.5),
+                        ("NCIC entry", f"Entered as stolen - NIC #{nic}", 5.0)])
+            narrative = (f"Complainant {p['holder']} states the {ymm} (VIN {v['vin']}) "
+                         f"was parked at the location above and was discovered missing "
+                         f"on {loss['date']}. {loss['description']} Vehicle entered "
+                         f"into NCIC as stolen. Investigation continuing.")
+        else:
+            narrative = (f"Officers responded to a vehicle fire involving a {ymm} "
+                         f"(VIN {v['vin']}) owned by {p['holder']}. {loss['description']} "
+                         f"Fire department extinguished the fire; vehicle sustained "
+                         f"total burn damage and was released to the owner.")
 
-    _section_bar(story, styles, "Reporting officer")
-    _fields(story, styles, [
-        ("Officer", officer),
-        ("Badge no.", badge),
-        ("Date", loss["date"]),
-    ])
+    _form_section(story, styles, "Narrative")
+    _form_grid(story, styles, [("Narrative", narrative, 7.5)])
+    _form_section(story, styles, "Reporting officer")
+    _form_grid(story, styles,
+               [("Officer name", officer, 3.0),
+                ("Badge no.", badge, 2.0),
+                ("Date", loss["date"], 2.5)])
     _finish_doc(os.path.join(pdf_dir, "police_report.pdf"), story)
-
 
 _STATE_NAMES = {"TX": "TEXAS", "GA": "GEORGIA", "CA": "CALIFORNIA"}
 
@@ -517,45 +598,51 @@ def _build_title(case: dict, pdf_dir: str) -> None:
     v, p = case["vehicle"], case["policy"]
     rng = _case_rng(case)
     styles = _form_styles()
-    city, zipc = CITIES[case["title_state"]]
-    holder_addr = f"{rng.choice(STREETS)}, {city}, {case['title_state']} {zipc}"
     st = case["title_state"]
+    city, zipc = CITIES[st]
+    holder_addr = f"{rng.choice(STREETS)}, {city}, {st} {zipc}"
     title_no = f"{st}-T-{rng.randint(100000, 999999)}"
     lien = case["lien"]
 
-    story = [Paragraph(f"STATE OF {_STATE_NAMES[st]}", styles["doctitle"]),
-             Paragraph("Department of Motor Vehicles &nbsp;|&nbsp; Certificate of Title",
-                       styles["docsub"])]
-    _section_bar(story, styles, "Title record")
-    _fields(story, styles, [
-        ("Title number", title_no),
-        ("Date issued", "2026-02-11"),
-        ("Title brands", ", ".join(case["title_brands"]) or "NONE"),
-    ])
-    _section_bar(story, styles, "Vehicle")
-    _fields(story, styles, [
-        ("Vehicle Identification Number (VIN)", v["vin"]),
-        ("Year / Make / Model", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
-        ("Color", v["color"]),
-        ("Odometer reading", f"{v['mileage']:,}"),
-    ])
-    _section_bar(story, styles, "Owner")
-    _fields(story, styles, [
-        ("Owner name", p["holder"]),
-        ("Owner address", holder_addr),
-    ])
-    _section_bar(story, styles, "First lienholder")
-    _fields(story, styles, [
-        ("Lienholder",
-         f"{lien['holder']} - ${lien['amount']:,}" if lien else "NONE"),
-    ])
-    story.append(Paragraph(
-        "This certificate is issued as evidence of ownership. Any alteration "
-        "voids this document. Surrender to the Department upon transfer of ownership.",
-        styles["small"]))
-    _sig_block(story, styles, ["Authorized signature", "Date"])
-    _finish_doc(os.path.join(pdf_dir, "title.pdf"), story)
+    story = []
+    _doc_header(story, styles, "CERTIFICATE OF TITLE",
+                f"State of {_STATE_NAMES[st].title()} - Department of Motor Vehicles",
+                "Title no.", title_no)
 
+    _form_section(story, styles, "Title record")
+    _form_grid(story, styles,
+               [("Date issued", "02/11/2026", 2.5),
+                ("Odometer reading", f"{v['mileage']:,}", 2.5),
+                ("Title brands",
+                 ", ".join(case["title_brands"]) or "NONE", 2.5)],
+               [("Vehicle Identification Number (V.I.N.)", v["vin"], 7.5)])
+
+    _form_section(story, styles, "Vehicle")
+    _form_grid(story, styles,
+               [("Year", str(v["year"]), 1.2),
+                ("Make", v["make"], 1.8),
+                ("Model", f"{v['model']} {v['trim']}", 2.3),
+                ("Color", v["color"], 2.2)])
+
+    _form_section(story, styles, "Owner")
+    _form_grid(story, styles,
+               [("Owner name", p["holder"], 3.5),
+                ("Owner address", holder_addr, 4.0)])
+
+    _form_section(story, styles, "Lienholder")
+    _form_grid(story, styles,
+               [("First lienholder",
+                 f"{lien['holder']} - ${lien['amount']:,}" if lien else "NONE", 7.5)])
+
+    story.append(Paragraph(
+        "This certificate is issued as evidence of ownership. Any alteration voids "
+        "this document. Surrender to the Department upon transfer of ownership.",
+        styles["small"]))
+    _form_section(story, styles, "Signatures")
+    _form_grid(story, styles,
+               [("Authorized signature", "", 3.75),
+                ("Date", "", 3.75)])
+    _finish_doc(os.path.join(pdf_dir, "title.pdf"), story)
 
 _ESTIMATE_ITEMS = [  # (operation, weight of total)
     ("Frame straightening", 0.2121),
@@ -571,41 +658,45 @@ def _build_estimate(case: dict, pdf_dir: str) -> None:
     v, p, loss = case["vehicle"], case["policy"], case["loss"]
     rng = _case_rng(case)
     styles = _form_styles()
-    city, zipc = CITIES[case["title_state"]]
     total = case["repair_estimate_total"]
     est_no = f"EST-{rng.randint(10000, 99999)}"
 
-    story = [Paragraph("COLLISION REPAIR ESTIMATE", styles["doctitle"]),
-             Paragraph("Capstone Auto Body &nbsp;|&nbsp; 4400 W Braker Ln, Austin, TX 78759"
-                       " &nbsp;|&nbsp; (512) 555-0148", styles["docsub"])]
-    _section_bar(story, styles, "Estimate header")
-    _fields(story, styles, [
-        ("Estimate no.", est_no),
-        ("Estimate date", loss["date"]),
-        ("Customer", p["holder"]),
-        ("Insurance / Claim", f"Capstone Mutual - {case['case_id']}"),
-        ("Vehicle", f"{v['year']} {v['make']} {v['model']} {v['trim']}"),
-        ("Vehicle Identification Number (VIN)", v["vin"]),
-        ("Mileage", f"{v['mileage']:,}"),
-    ])
-    _section_bar(story, styles, "Line items")
-    rows = [[Paragraph("<b>#</b>", styles["k"]),
-             Paragraph("<b>Operation</b>", styles["k"]),
-             Paragraph("<b>Amount</b>", styles["k"])]]
+    story = []
+    _doc_header(story, styles, "COLLISION REPAIR ESTIMATE",
+                "Capstone Auto Body - 4400 W Braker Ln, Austin, TX 78759"
+                " - (512) 555-0148",
+                "Estimate no.", est_no)
+
+    _form_section(story, styles, "Estimate header")
+    _form_grid(story, styles,
+               [("Estimate date", loss["date"], 2.5),
+                ("Customer", p["holder"], 5.0)],
+               [("Insurance / Claim",
+                 f"Capstone Mutual - {case['case_id']}", 7.5)],
+               [("Vehicle",
+                 f"{v['year']} {v['make']} {v['model']} {v['trim']}", 7.5)],
+               [("V.I.N.", v["vin"], 5.0),
+                ("Mileage", f"{v['mileage']:,}", 2.5)])
+
+    _form_section(story, styles, "Line items")
+    rows = [[Paragraph("<b>#</b>", styles["flabel"]),
+             Paragraph("<b>OPERATION</b>", styles["flabel"]),
+             Paragraph("<b>AMOUNT</b>", styles["flabel"])]]
     amounts, acc = [], 0
     for i, (op, w) in enumerate(_ESTIMATE_ITEMS):
-        amt = total if i == len(_ESTIMATE_ITEMS) - 1 else round(w * total)
         if i == len(_ESTIMATE_ITEMS) - 1:
             amt = total - acc
+        else:
+            amt = round(w * total)
         amounts.append((op, amt))
         acc += amt
     for i, (op, amt) in enumerate(amounts, 1):
-        rows.append([Paragraph(str(i), styles["v"]),
-                     Paragraph(op, styles["v"]),
-                     Paragraph(f"${amt:,}", styles["v"])])
-    rows.append([Paragraph("", styles["v"]),
-                 Paragraph("<b>TOTAL ESTIMATE</b>", styles["v"]),
-                 Paragraph(f"<b>${total:,}</b>", styles["v"])])
+        rows.append([Paragraph(str(i), styles["fval"]),
+                     Paragraph(op, styles["fval"]),
+                     Paragraph(f"${amt:,}", styles["fval"])])
+    rows.append([Paragraph("", styles["fval"]),
+                 Paragraph("<b>TOTAL ESTIMATE</b>", styles["fval"]),
+                 Paragraph(f"<b>${total:,}</b>", styles["fval"])])
     t = Table(rows, colWidths=[0.5 * inch, 4.7 * inch, 2.3 * inch])
     t.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#999999")),
@@ -622,7 +713,10 @@ def _build_estimate(case: dict, pdf_dir: str) -> None:
         "This is an estimate only; the final invoice may vary once teardown is "
         "complete. Supplement required for hidden damage.",
         styles["small"]))
-    _sig_block(story, styles, ["Estimator signature", "Customer authorization"])
+    _form_section(story, styles, "Authorization")
+    _form_grid(story, styles,
+               [("Estimator signature", "", 3.75),
+                ("Customer authorization", "", 3.75)])
     _finish_doc(os.path.join(pdf_dir, "repair_estimate.pdf"), story)
 
 
