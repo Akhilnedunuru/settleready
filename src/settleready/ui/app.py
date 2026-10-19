@@ -34,14 +34,33 @@ from settleready.tools.email_client import get_email_client
 
 
 def _case_ids() -> list[str]:
-    with open(os.path.join(DATA_DIR, "cases.json")) as f:
-        return [c["case_id"] for c in json.load(f)]
+    """Dynamic case registry: cases the intake watcher created, oldest first."""
+    bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
+    try:
+        return [c["case_id"] for c in bb.list_cases()]
+    finally:
+        bb.close()
 
 
-def _selected() -> str:
-    if "case_id" not in st.session_state:
-        st.session_state.case_id = _case_ids()[0]
+def _selected() -> str | None:
+    ids = _case_ids()
+    if not ids:
+        return None
+    if st.session_state.get("case_id") not in ids:
+        st.session_state.case_id = ids[0]
     return st.session_state.case_id
+
+
+def _need_case() -> str | None:
+    """Tab guard: show the empty state when no cases exist yet."""
+    case_id = _selected()
+    if case_id is None:
+        st.info("📭 No cases yet — the intake watcher creates one automatically "
+                "when a claim email arrives.\n\n"
+                "Run `python -m settleready.agents.intake watch`, then send a claim email "
+                "whose subject contains the case ID (e.g. `TL-2026-1045`) with the claim "
+                "PDFs attached.")
+    return case_id
 
 
 # ------------------------------------------------------------------ tabs ---
@@ -75,10 +94,11 @@ def tab_emails():
             if e.attachments:
                 st.caption("attachments: " + ", ".join(a["filename"] for a in e.attachments))
     # Demo transport only: with real Gmail, replies arrive as real emails.
-    if hasattr(mail, "inject_inbound") and st.button("✉ Simulate customer reply"):
+    selected = _selected()
+    if selected and hasattr(mail, "inject_inbound") and st.button("✉ Simulate customer reply"):
         mail.inject_inbound(
             to="claims@demo.local", from_="customer@example.com",
-            subject=f"Re: claim documents — {_selected()}",
+            subject=f"Re: claim documents — {selected}",
             body="Hi, attaching the missing title scan as requested.",
         )
         st.success("Customer reply injected into the mock inbox.")
@@ -87,7 +107,9 @@ def tab_emails():
 
 def tab_packet():
     st.header("Case packet")
-    case_id = _selected()
+    case_id = _need_case()
+    if case_id is None:
+        return
     try:
         packet = build_packet(case_id, data_dir=DATA_DIR)
     except ValueError as e:
@@ -157,7 +179,9 @@ def tab_packet():
 
 def tab_review():
     st.header("Senior analyst review")
-    case_id = _selected()
+    case_id = _need_case()
+    if case_id is None:
+        return
     try:
         packet = build_packet(case_id, data_dir=DATA_DIR)
     except ValueError as e:
@@ -202,7 +226,9 @@ def tab_review():
 
 def tab_audit():
     st.header("Audit trail")
-    case_id = _selected()
+    case_id = _need_case()
+    if case_id is None:
+        return
     bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
     log = bb.audit_log(case_id)
     bb.close()
@@ -231,12 +257,16 @@ def main() -> None:
     st.title("SettleReady — total-loss case preparation")
     st.caption("Synthetic demo data only. The agent prepares; the senior analyst decides.")
 
-    if not os.path.exists(os.path.join(DATA_DIR, "cases.json")):
-        st.error("No fixtures found — run ./scripts/seed.sh first.")
+    if not os.path.exists(os.path.join(DATA_DIR, "statutes")):
+        st.error("No environment found — run ./scripts/fresh.sh (or ./scripts/seed.sh) first.")
         return
 
     st.sidebar.header("Case")
-    st.sidebar.selectbox("Select case", _case_ids(), key="case_id")
+    ids = _case_ids()
+    if ids:
+        st.sidebar.selectbox("Select case", ids, key="case_id")
+    else:
+        st.sidebar.caption("No cases yet — they appear here when claim emails arrive.")
     st.sidebar.caption("Cases are created by the intake watcher when claim emails arrive.")
 
     tabs = st.tabs(["Emails", "Packet", "Review", "Audit trail"])

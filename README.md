@@ -32,14 +32,36 @@ cd settleready
 cp .env.example .env        # paste your OPENAI_API_KEY (LangSmith key optional)
 
 .venv/bin/python scripts/smoke_test.py  # verifies LLM + embeddings work (~$0.01)
+```
+
+Two ways to populate the app — pick one:
+
+**A. Fresh start (real-world flow).** Only the environment is generated (statute
+corpus + mock title/lien/CLUE/valuation records). The app boots empty; cases are
+created by the intake watcher as claim emails arrive.
+
+```bash
+./scripts/fresh.sh            # environment only, no demo fixtures
+./scripts/build_index.sh      # builds the local Chroma RAG index
+export PYTHONPATH="$PWD/src"
+.venv/bin/python -m settleready.agents.intake watch   # start the intake daemon
+# then send a claim email (subject contains the case ID, claim PDFs attached)
+streamlit run src/settleready/ui/app.py   # analyst workbench
+```
+
+**B. Seeded demo (eval + scripted walkthrough).** Loads 3 deterministic synthetic
+cases with ground truth, a seeded inbox email, and seeded return-tally history.
+
+```bash
 ./scripts/seed.sh             # generates synthetic fixtures (deterministic)
 ./scripts/build_index.sh      # builds the local Chroma RAG index
 
 export PYTHONPATH="$PWD/src"
 .venv/bin/python -m settleready.pipeline --case-id TL-2026-1044   # full pipeline, one case
 .venv/bin/python -m settleready.eval.metrics                     # scores vs. fixture ground truth
-streamlit run src/settleready/ui/app.py   # demo + analyst review UI
+streamlit run src/settleready/ui/app.py   # analyst workbench
 ```
+(`./scripts/fresh.sh` wipes back to the empty state at any time.)
 
 ## Real-world email intake (no "Run" button)
 

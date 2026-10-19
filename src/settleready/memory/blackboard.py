@@ -83,6 +83,17 @@ class CaseBlackboard:
         return dict(zip(
             ("case_id", "loss_type", "title_state", "stage", "created_at", "updated_at"), row))
 
+    def list_cases(self) -> list[dict]:
+        """All cases, oldest first — the dynamic case registry.
+
+        The UI lists cases from here, not from a static fixture file, so the
+        app starts empty and fills as the intake watcher creates cases."""
+        rows = self._db.execute(
+            "SELECT case_id, loss_type, title_state, stage, created_at, updated_at "
+            "FROM cases ORDER BY created_at").fetchall()
+        cols = ("case_id", "loss_type", "title_state", "stage", "created_at", "updated_at")
+        return [dict(zip(cols, r)) for r in rows]
+
     # -- key/value working state ------------------------------------------
     def write(self, case_id: str, key: str, value) -> None:
         """Write a stage output (fields, verification, ...) as JSON."""

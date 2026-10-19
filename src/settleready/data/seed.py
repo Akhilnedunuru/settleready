@@ -260,7 +260,17 @@ def _write(path: str, obj) -> None:
 
 # ----------------------------------------------------------------- main ---
 
-def main(seed: int = 42, out: str = "data") -> None:
+def main(seed: int = 42, out: str = "data", env_only: bool = False) -> None:
+    """Generate the synthetic world.
+
+    env_only=True writes just the environment the agent operates in — the
+    statute corpus and the mock title/lien/CLUE/valuation records. No demo
+    cases, no PDFs, no seeded inbox, no tally history: a fresh start where
+    cases are created by the intake watcher as real claim emails arrive.
+    env_only=False (default) additionally writes the 3 canned demo fixtures
+    (cases.json, PDFs, seeded inbox + tally) used by the eval harness and the
+    scripted demo.
+    """
     rng = random.Random(seed)
     if os.path.exists(out):
         shutil.rmtree(out)
@@ -268,14 +278,14 @@ def main(seed: int = 42, out: str = "data") -> None:
     os.makedirs(os.path.join(out, "statutes"), exist_ok=True)
 
     cases = case_specs(rng)
-    _write(os.path.join(out, "cases.json"), cases)
 
     title_db, liens, clue, comps = {}, {}, {}, {}
     for case in cases:
         vin = case["vehicle"]["vin"]
-        pdf_dir = os.path.join(out, "pdfs", case["case_id"])
-        os.makedirs(pdf_dir, exist_ok=True)
-        _build_pdfs(case, pdf_dir)
+        if not env_only:
+            pdf_dir = os.path.join(out, "pdfs", case["case_id"])
+            os.makedirs(pdf_dir, exist_ok=True)
+            _build_pdfs(case, pdf_dir)
 
         title_db[vin] = {"state": case["title_state"], "brands": case["title_brands"]}
         liens[vin] = ({"holder": case["lien"]["holder"], "amount": case["lien"]["amount"]}
@@ -291,6 +301,12 @@ def main(seed: int = 42, out: str = "data") -> None:
     for st, (title, body) in STATUTES.items():
         with open(os.path.join(out, "statutes", f"{st}.md"), "w") as f:
             f.write(f"# {BANNER}\n\n# {title}\n\n{body}\n")
+
+    if env_only:
+        print(f"Environment only -> {out}/ (statutes + mock DBs, no demo fixtures)")
+        return
+
+    _write(os.path.join(out, "cases.json"), cases)
 
     # Seeded inbox: the demo claim email for case 1
     c1 = cases[0]
@@ -322,5 +338,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", default="data")
+    p.add_argument("--env-only", action="store_true",
+                   help="only the environment (statutes + mock DBs); no demo fixtures")
     a = p.parse_args()
-    main(seed=a.seed, out=a.out)
+    main(seed=a.seed, out=a.out, env_only=a.env_only)

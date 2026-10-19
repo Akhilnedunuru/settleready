@@ -109,3 +109,34 @@ def test_blackboard_roundtrip(tmp_path):
     events = [e["event"] for e in bb.audit_log("C9")]
     assert "case_created" in events and "stage_transition" in events
     bb.close()
+
+
+def test_list_cases_registry(tmp_path):
+    from settleready.memory.blackboard import CaseBlackboard
+    bb = CaseBlackboard(str(tmp_path / "bb.db"))
+    assert bb.list_cases() == []  # fresh start: empty registry
+    bb.create_case("TL-2026-9001")
+    bb.create_case("TL-2026-9002")
+    ids = [c["case_id"] for c in bb.list_cases()]
+    assert ids == ["TL-2026-9001", "TL-2026-9002"]
+    bb.close()
+
+
+def test_seed_env_only(tmp_path):
+    from settleready.data.seed import main as seed_main
+    seed_main(seed=42, out=str(tmp_path), env_only=True)
+    # environment present ...
+    assert (tmp_path / "statutes" / "TX.md").exists()
+    assert (tmp_path / "title_db.json").exists()
+    assert (tmp_path / "liens.json").exists()
+    assert (tmp_path / "clue.json").exists()
+    assert (tmp_path / "comps.json").exists()
+    # ... but no demo fixtures
+    assert not (tmp_path / "cases.json").exists()
+    assert list((tmp_path / "pdfs").iterdir()) == []
+    assert not (tmp_path / "inbox.json").exists()
+    assert not (tmp_path / "tally.db").exists()
+    # mock DB records are the deterministic fixture VINs (world is consistent)
+    import json
+    title_db = json.load(open(tmp_path / "title_db.json"))
+    assert len(title_db) == 3 and all(v["state"] in ("TX", "GA") for v in title_db.values())
