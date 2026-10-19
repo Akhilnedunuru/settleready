@@ -69,6 +69,27 @@ def _need_case() -> str | None:
     return _selected()
 
 
+def _flash(kind: str, msg: str) -> None:
+    """Queue a feedback message that survives the 2s fragment re-renders.
+
+    Plain st.success/warning calls vanish on the next auto-refresh tick, which
+    makes button clicks look dead. Flashed messages persist ~30s.
+    """
+    import time as _time
+    msgs = st.session_state.get("flashes", [])
+    msgs.append((kind, msg, _time.time()))
+    st.session_state["flashes"] = msgs
+
+
+def _show_flash() -> None:
+    import time as _time
+    now = _time.time()
+    msgs = [m for m in st.session_state.get("flashes", []) if now - m[2] < 30]
+    st.session_state["flashes"] = msgs
+    for kind, msg, _ts in msgs:
+        getattr(st, kind)(msg)
+
+
 @st.fragment(run_every=2)
 def case_picker() -> None:
     """Global case picker, always visible above the tabs.
@@ -360,6 +381,7 @@ def tab_review():
     st.write(f"Case **{case_id}** — stage `{packet['stage']}`, "
              f"returns used: {packet['return_count']}/{MAX_RETURNS}, "
              f"customer follow-ups: {packet['followup_count']}/3")
+    _show_flash()
     if packet["verification"].get("conflicts"):
         for cf in packet["verification"]["conflicts"]:
             st.error(f"{cf['reason_code']}: {cf['detail']}")
@@ -378,9 +400,10 @@ def tab_review():
             try:
                 out = run_case(case_id, data_dir=DATA_DIR)
             except Exception as e:  # noqa: BLE001 — surface it in the UI
-                st.error(f"Pipeline failed: {e}")
+                _flash("error", f"Pipeline failed: {e}")
+                st.rerun()
                 return
-        st.success(f"Routed → **{out['next']}**")
+        _flash("success", f"Routed → **{out['next']}**")
         st.rerun()
     st.caption("Re-run re-executes the full pipeline on the current documents — use it "
                "after the customer sends missing files. It does not reset the return "
@@ -390,20 +413,31 @@ def tab_review():
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✅ Approve", type="primary"):
-            out = submit_review(case_id, "approve", note=note, data_dir=DATA_DIR)
-            st.success(f"Case approved → stage `{out['stage']}`")
+            with st.spinner("Recording approval…"):
+                out = submit_review(case_id, "approve", note=note, data_dir=DATA_DIR)
+            _flash("success", f"Case approved → stage `{out['stage']}`")
+            st.rerun()
     with col2:
         reason = st.selectbox("Reason code", sorted(REASON_CODES),
                               format_func=lambda c: f"{c} — {REASON_CODES[c][1]}")
         if st.button("↩ Return to analyst"):
-            out = submit_review(case_id, "return", reason_code=reason,
-                                note=note, data_dir=DATA_DIR)
-            st.warning(f"Returned ({out['return_count']}/{MAX_RETURNS}) → `{out['stage']}`")
+            with st.spinner("Returning to analyst…"):
+                try:
+                    out = submit_review(case_id, "return", reason_code=reason,
+                                        note=note, data_dir=DATA_DIR)
+                except Exception as e:  # noqa: BLE001 — surface it in the UI
+                    _flash("error", f"Return failed: {e}")
+                    st.rerun()
+                    return
+            _flash("warning", f"Returned ({out['return_count']}/{MAX_RETURNS}) → `{out['stage']}`")
             if out["promoted"]:
-                st.info(f"🧠 {out['promotion_detail']}")
+                _flash("info", f"🧠 {out['promotion_detail']}")
+            if out["outreach"]["sent"]:
+                _flash("info", f"📤 Customer emailed: {out['outreach']['reason']}")
             if out["stage"] == "escalated":
-                st.error("Return budget exhausted — escalated to a human. "
-                         "The loop stops here by design.")
+                _flash("error", "Return budget exhausted — escalated to a human. "
+                                "The loop stops here by design.")
+            st.rerun()
 
 
 @st.fragment(run_every=2)

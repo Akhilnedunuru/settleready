@@ -88,7 +88,7 @@ class ImapEmailClient:
         msg["To"] = to
         msg["Subject"] = subject
         msg.set_content(body)
-        with smtplib.SMTP_SSL(self._smtp_host, 465) as smtp:
+        with smtplib.SMTP_SSL(self._smtp_host, 465, timeout=30) as smtp:
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         return EmailRecord(

@@ -799,7 +799,7 @@ def _write(path: str, obj) -> None:
 # ----------------------------------------------------------------- main ---
 
 def main(seed: int = 42, out: str = "data", env_only: bool = False,
-         num_cases: int = 3) -> None:
+         num_cases: int = 3, tally_seed: bool = True) -> None:
     """Generate the synthetic world.
 
     env_only=True writes just the environment the agent operates in — the
@@ -863,11 +863,13 @@ def main(seed: int = 42, out: str = "data", env_only: bool = False,
               f'Attachments: claim_form.pdf, police_report.pdf'),
     )
 
-    # Seeded tally history: 2x GA UNDECLARED_LIEN (one more promotes the check)
-    tally = ReturnTallyStore(db_path=os.path.join(out, "tally.db"))
-    for _ in range(2):
-        tally.log_return(reason_code="UNDECLARED_LIEN", field="lien_status", title_state="GA")
-    tally.close()
+    # Seeded tally history: 2x GA UNDECLARED_LIEN (one more promotes the check).
+    # Skip with tally_seed=False for a truly empty episodic memory while testing.
+    if tally_seed:
+        tally = ReturnTallyStore(db_path=os.path.join(out, "tally.db"))
+        for _ in range(2):
+            tally.log_return(reason_code="UNDECLARED_LIEN", field="lien_status", title_state="GA")
+        tally.close()
 
     print(f"Seeded {len(cases)} cases -> {out}/")
     for c in cases:
@@ -887,8 +889,11 @@ if __name__ == "__main__":
     p.add_argument("--gen-doc", nargs=2, metavar=("CASE_ID", "DOC_TYPE"),
                    help="generate one missing document for a case "
                         "(claim_form|police_report|title|repair_estimate)")
+    p.add_argument("--no-tally-seed", action="store_true",
+                   help="leave the return-tally empty (no pre-seeded history)")
     a = p.parse_args()
     if a.gen_doc:
         gen_doc(a.out, a.gen_doc[0], a.gen_doc[1])
     else:
-        main(seed=a.seed, out=a.out, env_only=a.env_only, num_cases=a.num_cases)
+        main(seed=a.seed, out=a.out, env_only=a.env_only, num_cases=a.num_cases,
+             tally_seed=not a.no_tally_seed)
