@@ -150,7 +150,15 @@ def tab_emails():
         pass
     from settleready.tools.email_client import get_email_client
     mail = get_email_client(data_dir=DATA_DIR)
-    inbox = mail.poll_inbox()
+    try:
+        inbox = mail.poll_inbox()
+    except Exception as e:  # noqa: BLE001 — bad creds shouldn't kill the app
+        st.warning(
+            "Couldn't reach the email inbox: "
+            f"{e}\n\nIf you set `SETTLEREADY_EMAIL_SOURCE=gmail`, check `GMAIL_ADDRESS` / "
+            "`GMAIL_APP_PASSWORD` in your `.env` (app password needs 2-Step Verification on). "
+            "Remove that line to use the mock inbox.")
+        inbox = []
     if not inbox:
         st.info("Inbox is empty — run scripts/seed.sh to seed the demo claim email.")
     for e in inbox:
