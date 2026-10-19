@@ -197,22 +197,35 @@ def tab_emails():
         pass
 
     claim_events = [e for e in events.tail(DATA_DIR, limit=100)
-                    if e["event"] == "email_received"]
+                    if e["event"] in ("email_received", "reply_received", "email_sent")]
     if not claim_events:
         st.info("No claim emails yet — send one whose subject contains the case ID "
                 "(e.g. `Claim filed via mobile app — TL-2026-1045`) with the claim PDFs attached.")
     for ev in claim_events:
         d = ev.get("detail") or {}
         ts = time.strftime("%H:%M:%S", time.localtime(ev["ts"]))
-        with st.expander(f"{d.get('subject')} — {ts}"):
-            st.write(f"From: {d.get('from')}")
-            st.write(f"Case: `{ev.get('case_id')}`")
-            n_att = d.get("attachments", 0)
-            if n_att:
-                st.caption(f"{n_att} PDF attachment(s) saved to "
-                           f"`data/pdfs/{ev.get('case_id')}/`")
-            if d.get("body"):
-                st.write(d["body"])
+        kind = ev["event"]
+        if kind == "reply_received":
+            atts = ", ".join(d.get("attachments", [])) or "no attachments"
+            with st.expander(f"💬 Customer reply — {ev.get('case_id')} — {ts}"):
+                st.write(f"From: {d.get('from')}")
+                st.write(f"Attachments: {atts}")
+        elif kind == "email_sent":
+            with st.expander(f"📤 Info request sent — {ev.get('case_id')} — {ts}"):
+                st.write(f"To: {d.get('to')}")
+                for n in d.get("needs", []):
+                    st.write(f"- {n}")
+            continue
+        else:
+            with st.expander(f"{d.get('subject')} — {ts}"):
+                st.write(f"From: {d.get('from')}")
+                st.write(f"Case: `{ev.get('case_id')}`")
+                n_att = d.get("attachments", 0)
+                if n_att:
+                    st.caption(f"{n_att} PDF attachment(s) saved to "
+                               f"`data/pdfs/{ev.get('case_id')}/`")
+                if d.get("body"):
+                    st.write(d["body"])
 
     if st.button("🔄 Check inbox now"):
         # Manual IMAP peek only — the watcher owns continuous polling.
