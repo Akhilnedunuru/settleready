@@ -19,7 +19,8 @@ export PYTHONPATH="$PWD/src"
 .venv/bin/python -m settleready.data.seed --seed 42 --out data --env-only
 # runtime state the watcher/pipeline/UI create as they work
 rm -f data/blackboard.db data/tally.db data/intake_state.json data/inbox.json
-rm -rf data/chroma
+rm -f data/events.jsonl
+rm -rf data/chroma data/running data/pdfs
 echo "Fresh data/ ready. Next:"
-echo "  .venv/bin/python scripts/build_index.sh   # build the statute RAG index"
-echo "  .venv/bin/python -m settleready.agents.intake watch   # start the intake daemon"
+echo "  bash scripts/build_index.sh   # build the statute RAG index"
+echo "  bash scripts/start.sh         # watcher + Streamlit UI in one terminal"
