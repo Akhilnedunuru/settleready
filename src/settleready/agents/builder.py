@@ -51,6 +51,7 @@ def build_packet(case_id: str, data_dir: str = "data") -> dict:
                   "chunks": legal.get("chunks", [])},
         "acv": acv,
         "return_count": state.get("return_count", 0),
+        "followup_count": state.get("followup_count", 0),
         "last_return": state.get("last_return"),
         "citations": citations,
     }

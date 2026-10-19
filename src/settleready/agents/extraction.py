@@ -33,8 +33,16 @@ to the option immediately BEFORE it ("YES NO X" means NO is selected).
 Respond with ONLY valid JSON, exactly:
 {"fields": {"<field>": {"value": ..., "confidence": ..., "span": ...}}}"""
 
-# Extraction order: claim form usually holds the most fields.
+# Extraction order: customer follow-up statements first (freshest testimony),
+# then claim form (usually holds the most fields).
 _DOC_PRIORITY = {"claim_form": 0, "police_report": 1, "title": 2, "repair_estimate": 3}
+
+
+def _doc_rank(doc: dict) -> int:
+    base = doc["source"].split(".")[0]
+    if base.startswith("customer_reply"):
+        return -1
+    return _DOC_PRIORITY.get(base, 9)
 
 
 def _normalize(field: str, value):
@@ -95,7 +103,7 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
             emit(data_dir, case_id, "react",
                  {"iteration": iteration, **step})
 
-    docs = sorted(parsed_docs, key=lambda d: _DOC_PRIORITY.get(d["source"].split(".")[0], 9))
+    docs = sorted(parsed_docs, key=_doc_rank)
     state: dict = {}
     trace: list[dict] = []
 
@@ -149,7 +157,11 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
                 if val is None:
                     continue
                 prev = state.get(f)
-                if prev is None or conf > prev["confidence"]:
+                # Customer statements override: the claimant's latest word on a
+                # field they address supersedes the form. The verification
+                # layer still cross-checks against authoritative records, so a
+                # mistaken statement can't launder a real conflict.
+                if prev is None or doc.get("override") or conf > prev["confidence"]:
                     state[f] = {
                         "value": val,
                         "confidence": round(min(conf, 1.0), 2),

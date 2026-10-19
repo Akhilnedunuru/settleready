@@ -110,6 +110,9 @@ def _render_event(ev: dict) -> None:
                 st.write(f"- {n}")
     elif e in ("email_skipped", "email_failed"):
         st.write(f"`{ts}` 📪 outreach {e.split('_')[1]}: {d.get('reason', d.get('error'))}")
+    elif e == "reply_received":
+        atts = ", ".join(d.get("attachments", [])) or "no attachments"
+        st.write(f"`{ts}` 💬 customer reply from {d.get('from')} — {atts}")
     elif e == "pipeline_started":
         st.write(f"`{ts}` ▶ pipeline started")
     elif e == "pipeline_finished":
@@ -252,7 +255,8 @@ def tab_packet():
         st.warning(str(e))
         return
     st.subheader(f"{packet['case_id']} — stage: `{packet['stage']}` "
-                 f"(returns: {packet['return_count']}/{MAX_RETURNS})")
+                 f"(returns: {packet['return_count']}/{MAX_RETURNS}, "
+                 f"customer follow-ups: {packet['followup_count']}/3)")
 
     st.markdown("**Extracted fields**")
     # str() the values: the column mixes str/int/bool, which pyarrow can't serialize
@@ -341,7 +345,8 @@ def tab_review():
         return
 
     st.write(f"Case **{case_id}** — stage `{packet['stage']}`, "
-             f"returns used: {packet['return_count']}/{MAX_RETURNS}")
+             f"returns used: {packet['return_count']}/{MAX_RETURNS}, "
+             f"customer follow-ups: {packet['followup_count']}/3")
     if packet["verification"].get("conflicts"):
         for cf in packet["verification"]["conflicts"]:
             st.error(f"{cf['reason_code']}: {cf['detail']}")

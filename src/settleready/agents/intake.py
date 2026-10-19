@@ -208,6 +208,18 @@ class IntakeWatcher:
                     "detail": f"subject={email.subject!r}"}
         bb.log(case_id, case["stage"], "customer_reply",
                {"from": email.from_, "body": email.body[:500]})
+        # Documents the customer sends back become case documents...
+        saved = self._save_attachments(email, case_id)
+        # ...and a text-only reply still counts: the statement is fed to
+        # extraction as a customer document on the next run (e.g. confirming
+        # a lien in words), so the loop can resolve without new PDFs.
+        if (email.body or "").strip():
+            stmts = bb.read(case_id, "customer_statements") or []
+            stmts.append({"from": email.from_, "body": email.body.strip()[:2000]})
+            bb.write(case_id, "customer_statements", stmts)
+        _emit_event(self._data_dir, case_id, "reply_received",
+                    {"from": email.from_, "attachments": saved,
+                     "body_len": len(email.body or "")})
         if case["stage"] in REWORK_STAGES:
             try:
                 summary = self._run_fn(case_id)
@@ -215,8 +227,10 @@ class IntakeWatcher:
                 return {"email": email.id, "action": "pipeline_failed",
                         "case_id": case_id, "detail": str(e)[:200]}
             return {"email": email.id, "action": "reply_retriggered",
-                    "case_id": case_id, "routed": summary.get("next")}
-        return {"email": email.id, "action": "reply_logged", "case_id": case_id}
+                    "case_id": case_id, "routed": summary.get("next"),
+                    "attachments_saved": saved}
+        return {"email": email.id, "action": "reply_logged", "case_id": case_id,
+                "attachments_saved": saved}
 
     def watch(self, interval_s: int = 15) -> None:
         """Daemon loop: poll forever. Ctrl-C stops."""

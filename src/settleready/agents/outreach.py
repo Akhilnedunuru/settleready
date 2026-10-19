@@ -133,10 +133,24 @@ def maybe_send_info_request(data_dir: str, case_id: str, needs: list[str],
                         {"to": claimant, "error": str(e)[:200]})
             return {"sent": False, "reason": f"send failed: {e}"}
         bb.write(case_id, "info_requested", sig)
-        bb.log(case_id, (bb.get_case(case_id) or {}).get("stage", ""),
-               "info_request_sent", {"to": claimant, "needs": needs})
+        followups = (bb.read(case_id, "followup_count") or 0) + 1
+        bb.write(case_id, "followup_count", followups)
+        stage = (bb.get_case(case_id) or {}).get("stage", "")
+        bb.log(case_id, stage, "info_request_sent",
+               {"to": claimant, "needs": needs, "followup_count": followups})
         _emit_event(data_dir, case_id, "email_sent",
-                    {"to": claimant, "subject": subject, "needs": needs})
-        return {"sent": True, "reason": f"sent to {claimant}"}
+                    {"to": claimant, "subject": subject, "needs": needs,
+                     "followup_count": followups})
+        # Bounded outer loop (checkpoint 2.1): 3 customer follow-ups, then a
+        # human takes over — the agent stops asking on its own.
+        escalated = False
+        if followups >= 3:
+            bb.set_stage(case_id, "escalated", event="followup_budget_exhausted",
+                         details={"followup_count": followups})
+            _emit_event(data_dir, case_id, "escalated",
+                        {"reason": "followup budget exhausted (3)"})
+            escalated = True
+        return {"sent": True, "reason": f"sent to {claimant}",
+                "followup_count": followups, "escalated": escalated}
     finally:
         bb.close()

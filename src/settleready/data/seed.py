@@ -734,6 +734,38 @@ def _build_pdfs(case: dict, pdf_dir: str) -> None:
         _build_estimate(case, pdf_dir)
 
 
+_DOC_BUILDERS = {
+    "claim_form": _build_fnol,
+    "police_report": _build_police_report,
+    "title": _build_title,
+    "repair_estimate": _build_estimate,
+}
+
+
+def gen_doc(out: str, case_id: str, doc_type: str) -> str:
+    """Generate a single missing document for a case (demo follow-ups).
+
+    Reads the case spec from <out>/cases.json and writes the PDF into
+    <out>/pdfs/<case_id>/. Used when the customer replies with a document
+    the analyst asked for.
+    """
+    import json as _json
+    import os as _os
+    if doc_type not in _DOC_BUILDERS:
+        raise ValueError(f"doc_type must be one of {sorted(_DOC_BUILDERS)}")
+    with open(_os.path.join(out, "cases.json")) as f:
+        cases = _json.load(f)
+    case = next((c for c in cases if c["case_id"] == case_id), None)
+    if case is None:
+        raise ValueError(f"unknown case {case_id} in {out}/cases.json")
+    pdf_dir = _os.path.join(out, "pdfs", case_id)
+    _os.makedirs(pdf_dir, exist_ok=True)
+    _DOC_BUILDERS[doc_type](case, pdf_dir)
+    path = _os.path.join(pdf_dir, f"{doc_type}.pdf")
+    print(f"Generated {path}")
+    return path
+
+
 # ------------------------------------------------------------- statutes ---
 
 STATUTES = {
@@ -852,5 +884,11 @@ if __name__ == "__main__":
                    help="only the environment (statutes + mock DBs); no demo fixtures")
     p.add_argument("--num-cases", type=int, default=3,
                    help="total cases to generate (first 3 are the hand-designed fixtures)")
+    p.add_argument("--gen-doc", nargs=2, metavar=("CASE_ID", "DOC_TYPE"),
+                   help="generate one missing document for a case "
+                        "(claim_form|police_report|title|repair_estimate)")
     a = p.parse_args()
-    main(seed=a.seed, out=a.out, env_only=a.env_only, num_cases=a.num_cases)
+    if a.gen_doc:
+        gen_doc(a.out, a.gen_doc[0], a.gen_doc[1])
+    else:
+        main(seed=a.seed, out=a.out, env_only=a.env_only, num_cases=a.num_cases)

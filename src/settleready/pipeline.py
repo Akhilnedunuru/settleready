@@ -85,6 +85,12 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     bb.write(case_id, "docs_present", docs_present)
     _emit_event(data_dir, case_id, "documents_parsed",
                 {"count": len(docs), "docs": docs_present})
+    # Customer follow-up statements (text replies) join the extraction corpus
+    # as their own document, so a confirmation in words ("yes, the lien is
+    # with Lone Star") can resolve a conflict without new PDFs.
+    for i, stmt in enumerate(bb.read(case_id, "customer_statements") or []):
+        docs.append({"source": f"customer_reply_{i + 1}.txt", "override": True,
+                     "pages": [{"page": 1, "text": stmt["body"]}]})
     summary["stages"].append(f"intake: parsed {len(docs)} documents {docs_present}")
 
     # -- extraction: ReAct loop --------------------------------------------
@@ -125,6 +131,8 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
         outreach = maybe_send_info_request(
             data_dir, case_id, needs_from_report(report), holder_name=holder or "")
         summary["outreach"] = outreach
+        if outreach.get("escalated"):
+            next_stage = "escalated"
         summary["next"] = next_stage
         summary["audit"] = bb.audit_log(case_id)
         return summary
