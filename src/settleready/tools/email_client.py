@@ -111,6 +111,13 @@ def get_email_client(data_dir: str = "data") -> "EmailClient":
     The watcher and UI only ever talk to the EmailClient protocol, so flipping
     the env var swaps the transport with zero agent-code changes.
     """
+    # Load .env here (mirroring get_provider()): credentials live in the local
+    # .env, and no entry point should depend on the user exporting them by hand.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
     if os.environ.get("SETTLEREADY_EMAIL_SOURCE", "mock").lower() == "gmail":
         from settleready.tools.imap_client import ImapEmailClient
         return ImapEmailClient()
