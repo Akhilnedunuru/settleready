@@ -82,8 +82,15 @@ def _expected_acv(comps: list[dict], mileage: int, condition: str = "good") -> i
     return int(round(mean)) - adj
 
 
-def case_specs(rng: random.Random) -> list[dict]:
-    """The master schema. Edit here; everything downstream follows."""
+def case_specs(rng: random.Random, n: int = 3) -> list[dict]:
+    """The master schema. Edit here; everything downstream follows.
+
+    The first 3 are the hand-designed fixtures (eval ground truth + scripted
+    demo) and never change. Beyond that, deterministic generated cases cycle
+    through archetypes: clean (→ ready_for_review), undeclared lien
+    (→ needs_info via conflict), missing title doc (→ needs_info via
+    completeness). Case IDs continue TL-2026-1046, ...
+    """
     cases = []
 
     # Case 1 — the demo case (matches the architecture doc trace)
@@ -146,7 +153,93 @@ def case_specs(rng: random.Random) -> list[dict]:
         "expected_acv": _expected_acv(c3_comps, 88000),
         "repair_estimate_total": 19800,
     })
+
+    for i in range(3, max(3, n)):
+        cases.append(_generated_case(rng, i))
     return cases
+
+
+# --------------------------------------------------- generated cases ---
+
+_VEHICLES = [
+    (2020, "Honda", "Civic", "LX"), (2018, "Toyota", "RAV4", "XLE"),
+    (2022, "Ford", "Escape", "SE"), (2019, "Chevrolet", "Malibu", "LT"),
+    (2021, "Nissan", "Altima", "SV"), (2017, "Hyundai", "Elantra", "SEL"),
+    (2020, "Jeep", "Wrangler", "Sport"), (2019, "Subaru", "Outback", "Premium"),
+    (2022, "Kia", "K5", "LXS"), (2018, "Mazda", "CX-5", "Touring"),
+    (2021, "Volkswagen", "Jetta", "S"), (2019, "GMC", "Sierra 1500", "SLE"),
+]
+_GEN_LOSS_TYPES = ["theft", "fire", "collision"]
+_GEN_STATES = ["TX", "GA", "CA"]
+_GEN_AGENCIES = {"TX": ("TXDPS", "TX Highway Patrol"),
+                 "GA": ("GSP", "Georgia State Patrol"),
+                 "CA": ("CHP", "California Highway Patrol")}
+_GEN_PLACES = ["apartment parking garage", "grocery store parking lot",
+               "driveway", "office parking structure"]
+_GEN_LIENHOLDERS = ["Capital Auto Finance", "Lone Star Credit Union",
+                    "Desert Federal Bank", "First Community Bank"]
+_GEN_COLORS = ["Silver", "Black", "White", "Gray", "Blue", "Red"]
+
+
+def _generated_case(rng: random.Random, i: int) -> dict:
+    """One deterministic synthetic case. i is the 0-based index into case_specs
+    (3, 4, ...); archetype cycles clean / undeclared-lien / missing-docs."""
+    idx = i - 3
+    loss_type = _GEN_LOSS_TYPES[idx % 3]
+    state = _GEN_STATES[idx % 3]
+    archetype = idx % 3  # 0: clean, 1: undeclared lien, 2: missing title doc
+    year, make, model, trim = _VEHICLES[idx % len(_VEHICLES)]
+    mileage = rng.randint(35000, 95000)
+    base = rng.randint(16000, 26000)
+    comps = _comps(rng, base)
+    agency_code, agency_name = _GEN_AGENCIES[state]
+
+    docs = ["claim_form", "police_report", "title"]
+    case_extra = {}
+    if loss_type == "collision":
+        docs.append("repair_estimate")
+        case_extra["repair_estimate_total"] = rng.randint(18500, 21500)
+
+    lien, declared_lien = None, False
+    if archetype == 1:  # conflict demo: lien on record, claimant said "no lien"
+        lien = {"holder": rng.choice(_GEN_LIENHOLDERS),
+                "amount": rng.randint(3000, 9000)}
+        declared_lien = False
+    elif archetype == 0 and rng.random() < 0.5:  # properly declared lien
+        lien = {"holder": rng.choice(_GEN_LIENHOLDERS),
+                "amount": rng.randint(2000, 8000)}
+        declared_lien = True
+    if archetype == 2:  # completeness loop: title doc missing
+        docs.remove("title")
+
+    if loss_type == "theft":
+        desc = f"Vehicle stolen overnight from {rng.choice(_GEN_PLACES)}."
+    elif loss_type == "fire":
+        desc = "Engine compartment fire; vehicle destroyed."
+    else:
+        desc = "Collision with guardrail; frame and suspension damage."
+
+    return {
+        "case_id": f"TL-2026-{1043 + i}",
+        "loss_type": loss_type,
+        "title_state": state,
+        "vehicle": {"year": year, "make": make, "model": model, "trim": trim,
+                    "vin": _vin(rng), "mileage": mileage,
+                    "color": rng.choice(_GEN_COLORS)},
+        "policy": {"number": f"{state}-{rng.choice('ABCD')}-{rng.randint(1000000, 9999999)}",
+                   "holder": _name(rng)},
+        "lien": lien,
+        "declared_lien": declared_lien,
+        "title_brands": [],
+        "loss": {"date": f"2026-09-{rng.randint(10, 28):02d}",
+                 "description": desc,
+                 "police_report_no": f"{agency_code}-2026-{rng.randint(10000, 99999)}",
+                 "agency": agency_name},
+        "documents": docs,
+        "comps": comps,
+        "expected_acv": _expected_acv(comps, mileage),
+        **case_extra,
+    }
 
 
 # ---------------------------------------------------------------- PDFs ---
@@ -260,16 +353,20 @@ def _write(path: str, obj) -> None:
 
 # ----------------------------------------------------------------- main ---
 
-def main(seed: int = 42, out: str = "data", env_only: bool = False) -> None:
+def main(seed: int = 42, out: str = "data", env_only: bool = False,
+         num_cases: int = 3) -> None:
     """Generate the synthetic world.
 
     env_only=True writes just the environment the agent operates in — the
     statute corpus and the mock title/lien/CLUE/valuation records. No demo
     cases, no PDFs, no seeded inbox, no tally history: a fresh start where
     cases are created by the intake watcher as real claim emails arrive.
-    env_only=False (default) additionally writes the 3 canned demo fixtures
+    env_only=False (default) additionally writes the demo fixtures
     (cases.json, PDFs, seeded inbox + tally) used by the eval harness and the
     scripted demo.
+
+    num_cases: total cases to generate (first 3 are the hand-designed
+    fixtures; beyond that, deterministic generated cases).
     """
     rng = random.Random(seed)
     if os.path.exists(out):
@@ -277,7 +374,7 @@ def main(seed: int = 42, out: str = "data", env_only: bool = False) -> None:
     os.makedirs(os.path.join(out, "pdfs"), exist_ok=True)
     os.makedirs(os.path.join(out, "statutes"), exist_ok=True)
 
-    cases = case_specs(rng)
+    cases = case_specs(rng, n=num_cases)
 
     title_db, liens, clue, comps = {}, {}, {}, {}
     for case in cases:
@@ -340,5 +437,7 @@ if __name__ == "__main__":
     p.add_argument("--out", default="data")
     p.add_argument("--env-only", action="store_true",
                    help="only the environment (statutes + mock DBs); no demo fixtures")
+    p.add_argument("--num-cases", type=int, default=3,
+                   help="total cases to generate (first 3 are the hand-designed fixtures)")
     a = p.parse_args()
-    main(seed=a.seed, out=a.out, env_only=a.env_only)
+    main(seed=a.seed, out=a.out, env_only=a.env_only, num_cases=a.num_cases)
