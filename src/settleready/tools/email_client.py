@@ -12,13 +12,14 @@ import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import re
 from typing import Protocol
 
 
-# IMAP pre-filter: only subjects carrying a case ID (TL-YYYY-NNNN) are fetched.
-# A superset of the extract_case_id regex — nothing the pipeline could accept
-# is ever excluded by this.
-CASE_SUBJECT_HINT = "TL-"
+# Case IDs ride in the subject line (filing confirmations + reply threads).
+# This is the single definition: the watcher, the UI, and the IMAP header
+# pre-filter all use it, so "what counts as a claim email" can't drift.
+CASE_ID_RE = re.compile(r"TL-\d{4}-\d+")
 
 
 @dataclass

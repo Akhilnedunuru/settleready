@@ -24,7 +24,7 @@ from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
-from settleready.tools.email_client import CASE_SUBJECT_HINT, EmailRecord
+from settleready.tools.email_client import CASE_ID_RE, EmailRecord
 
 
 def _decode(value: str | None) -> str:
@@ -48,24 +48,29 @@ class ImapEmailClient:
 
     # -- EmailClient protocol --------------------------------------------------
     def poll_inbox(self) -> list[EmailRecord]:
-        """Fetch messages whose subject carries a case ID, oldest first.
+        """Fetch claim emails, oldest first.
 
-        The SUBJECT pre-filter runs on the server, so unrelated mail (Google
-        notifications, etc.) is never even downloaded. The watcher's local
-        intake_state.json remains the dedup source of truth — reading an email
-        in a mail client never hides it from the watcher."""
+        Strategy: list everything, fetch headers only, keep subjects matching
+        the case-ID pattern, then download full bodies just for those. Unrelated
+        mail (Google notifications, ...) is never fully downloaded — and we
+        don't depend on the server's SEARCH behavior, which proved unreliable.
+        The watcher's local intake_state.json remains the dedup source of truth.
+        """
+        import email as _email
         import imaplib
         imap = imaplib.IMAP4_SSL(self._imap_host)
         try:
             imap.login(self._address, self._password)
             imap.select("INBOX")
-            _, data = imap.search(None, "SUBJECT", CASE_SUBJECT_HINT)
+            _, data = imap.search(None, "ALL")
             records = []
             for num in data[0].split():
+                _, hdr_data = imap.fetch(num, "(RFC822.HEADER)")
+                header = _email.message_from_bytes(hdr_data[0][1])
+                if not CASE_ID_RE.search(_decode(header.get("Subject")) or ""):
+                    continue  # not a claim email — skip without downloading
                 _, msg_data = imap.fetch(num, "(RFC822)")
-                import email as _email
-                msg = _email.message_from_bytes(msg_data[0][1])
-                records.append(self._to_record(msg))
+                records.append(self._to_record(_email.message_from_bytes(msg_data[0][1])))
             return records
         finally:
             try:

@@ -214,3 +214,43 @@ def test_state_survives_restart(tmp_path):
     w2 = _watcher(tmp_path, calls)
     assert w2.poll_once() == []
     assert w2.status()["cases_triggered"] == ["TL-2026-1045"]
+
+
+def test_poll_inbox_downloads_only_claim_emails(monkeypatch):
+    import imaplib
+    from email.message import EmailMessage
+    from settleready.tools.imap_client import ImapEmailClient
+
+    def make(subject, body):
+        m = EmailMessage()
+        m["From"] = "x@y.z"
+        m["To"] = "t"
+        m["Subject"] = subject
+        m["Message-ID"] = f"<{abs(hash(subject))}@x>"
+        m.set_content(body)
+        return m.as_bytes()
+
+    claim = make("Claim filed via mobile app — TL-2026-1045", "claim body here")
+    junk = make("Security alert", "junk body here")
+    fetched_full = []
+
+    class StubIMAP:
+        def login(self, u, p): pass
+        def select(self, box): return ("OK", [b"2"])
+        def search(self, charset, *criteria):
+            assert charset is None and criteria == ("ALL",)
+            return ("OK", [b"1 2"])
+        def fetch(self, num, what):
+            full = claim if num == b"1" else junk
+            if what == "(RFC822.HEADER)":
+                return ("OK", [(b"hdr", full.split(b"\n\n", 1)[0])])
+            fetched_full.append(num)
+            return ("OK", [(b"full", full)])
+        def logout(self): pass
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", lambda host: StubIMAP())
+    client = ImapEmailClient(address="d@g.com", app_password="x")
+    recs = client.poll_inbox()
+    assert [r.subject for r in recs] == ["Claim filed via mobile app — TL-2026-1045"]
+    assert recs[0].body == "claim body here"
+    assert fetched_full == [b"1"]  # the junk mail's body was never downloaded

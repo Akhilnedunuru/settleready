@@ -21,13 +21,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 
 from settleready.memory.blackboard import CaseBlackboard
-from settleready.tools.email_client import EmailRecord, get_email_client
+from settleready.tools.email_client import CASE_ID_RE, EmailRecord, get_email_client
 
-CASE_ID_RE = re.compile(r"TL-\d{4}-\d+")
 REWORK_STAGES = ("needs_info", "analyst_rework")  # waiting on the customer/analyst
 
 
