@@ -29,6 +29,11 @@ from settleready.tools.email_client import CASE_ID_RE, EmailRecord, get_email_cl
 REWORK_STAGES = ("needs_info", "analyst_rework")  # waiting on the customer/analyst
 
 
+def _ts() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%H:%M:%S")
+
+
 def extract_case_id(email: EmailRecord) -> str | None:
     """Case IDs ride in the subject line (filing confirmations + reply threads)."""
     m = CASE_ID_RE.search(email.subject or "")
@@ -114,7 +119,9 @@ class IntakeWatcher:
         seen = self._load_state()["seen"]
         bb = CaseBlackboard(os.path.join(self._data_dir, "blackboard.db"))
         try:
-            for email in self._mail.poll_inbox():
+            emails = self._mail.poll_inbox()
+            print(f"[{_ts()}] fetched {len(emails)} claim emails from inbox", flush=True)
+            for email in emails:
                 if email.id in seen:
                     continue
                 self._mark_seen(email.id)
@@ -199,11 +206,17 @@ class IntakeWatcher:
 
     def watch(self, interval_s: int = 15) -> None:
         """Daemon loop: poll forever. Ctrl-C stops."""
-        print(f"Watching inbox every {interval_s}s (Ctrl-C to stop)…")
+        print(f"[{_ts()}] Watching inbox every {interval_s}s (Ctrl-C to stop)…", flush=True)
         while True:
-            for a in self.poll_once():
-                print(f"[{a['action']}] {a.get('case_id', '')} {a.get('detail', '')}"
-                      .strip())
+            try:
+                actions = self.poll_once()
+            except Exception as e:  # noqa: BLE001 — log and keep watching
+                print(f"[{_ts()}] poll error: {e}", flush=True)
+                actions = []
+            for a in actions:
+                if a["action"] != "ignored":
+                    print(f"[{_ts()}] [{a['action']}] {a.get('case_id', '')} "
+                          f"{a.get('detail', '')}".strip(), flush=True)
             time.sleep(interval_s)
 
 

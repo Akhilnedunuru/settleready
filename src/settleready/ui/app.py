@@ -80,6 +80,8 @@ def tab_emails():
     try:
         from settleready.agents.intake import is_claim_email
         inbox = [e for e in mail.poll_inbox() if is_claim_email(e)]
+        print(f"[emails tab] poll -> {len(inbox)} claim emails", flush=True)
+        st.caption(f"Last poll: {len(inbox)} claim email(s).")
     except Exception as e:  # noqa: BLE001 — bad creds shouldn't kill the app
         st.warning(
             "Couldn't reach the email inbox: "

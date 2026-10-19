@@ -43,11 +43,11 @@ created by the intake watcher as claim emails arrive.
 ```bash
 ./scripts/fresh.sh            # environment only, no demo fixtures
 ./scripts/build_index.sh      # builds the local Chroma RAG index
-export PYTHONPATH="$PWD/src"
-.venv/bin/python -m settleready.agents.intake watch   # start the intake daemon
+./scripts/start.sh            # single terminal: watcher daemon + Streamlit UI (Ctrl-C stops both)
 # then send a claim email (subject contains the case ID, claim PDFs attached)
-streamlit run src/settleready/ui/app.py   # analyst workbench
 ```
+(Or run the two processes in separate terminals: `python -m settleready.agents.intake watch`
+and `streamlit run src/settleready/ui/app.py`.)
 
 **B. Seeded demo (eval + scripted walkthrough).** Loads 3 deterministic synthetic
 cases with ground truth, a seeded inbox email, and seeded return-tally history.

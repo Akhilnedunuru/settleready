@@ -63,14 +63,17 @@ class ImapEmailClient:
             imap.login(self._address, self._password)
             imap.select("INBOX")
             _, data = imap.search(None, "ALL")
+            nums = data[0].split()
             records = []
-            for num in data[0].split():
+            for num in nums:
                 _, hdr_data = imap.fetch(num, "(RFC822.HEADER)")
                 header = _email.message_from_bytes(hdr_data[0][1])
                 if not CASE_ID_RE.search(_decode(header.get("Subject")) or ""):
                     continue  # not a claim email — skip without downloading
                 _, msg_data = imap.fetch(num, "(RFC822)")
                 records.append(self._to_record(_email.message_from_bytes(msg_data[0][1])))
+            print(f"[imap] INBOX has {len(nums)} messages, "
+                  f"{len(records)} with a case ID in the subject", flush=True)
             return records
         finally:
             try:
