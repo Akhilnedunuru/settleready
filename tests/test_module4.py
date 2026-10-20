@@ -124,3 +124,34 @@ def test_chunk_markdown():
     assert len(chunks) == 2
     assert all(len(c) > 40 for c in chunks)
     assert not any("SYNTHETIC DOCUMENT" in c for c in chunks)
+
+
+# -- Retrieval A/B demo (checkpoint 3.1): baseline vs grounded ----------------------
+def test_retrieval_demo_contrasts_baseline_and_grounded(monkeypatch):
+    from settleready.eval.retrieval_demo import compare
+
+    fake = FakeCollection()
+    monkeypatch.setattr(ragmod, "_collection", lambda persist_dir, provider=None: fake)
+
+    class DemoProvider:
+        name = "fake"
+
+        def embed(self, text):
+            return [0.1] * 8
+
+        def complete(self, *, system, user, max_tokens=1024, temperature=0.2,
+                     json_mode=False):
+            if "[TX.md]" in user:  # grounded path: retrieved chunks in the prompt
+                return json.dumps({"answer": "100% of ACV [TX.md]",
+                                   "cited_sources": ["TX.md"]})
+            # parametric baseline: plausible-sounding, uncited
+            return json.dumps({"answer": "Usually around 75-80% of the value.",
+                               "cited_sources": []})
+
+    out = compare("What is the total loss threshold?", "TX",
+                  data_dir="/tmp/x", provider=DemoProvider())
+    assert out["baseline"]["citations"] == []
+    assert "75-80%" in out["baseline"]["answer"]
+    assert "TX.md" in out["grounded"]["citations"]
+    assert "100% of ACV" in out["grounded"]["answer"]
+    assert len(out["grounded"]["chunks"]) == 2
