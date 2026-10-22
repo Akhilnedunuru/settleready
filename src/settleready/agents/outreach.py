@@ -27,6 +27,10 @@ _CUSTOMER_ASKS = {
     "PHANTOM_LIEN": (
         "the claim form declares a lien, but our title records show none — "
         "please confirm whether a lienholder should be listed"),
+    "LIENHOLDER_MISMATCH": (
+        "the lienholder named on the claim form ({detail}) differs from the "
+        "one in our title records — please confirm which lienholder is "
+        "current (for example, after a refinance or payoff)"),
     "MISSING_TITLE_DOC": (
         "we are missing the certificate of title — please reply with a clear "
         "scan or photo of the front and back of the title"),

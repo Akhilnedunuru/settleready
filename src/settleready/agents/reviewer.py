@@ -20,6 +20,7 @@ MAX_RETURNS = 2  # then human escalation (checkpoint 2.1: bounded outer loop)
 # reason_code -> (tally field, human-readable description)
 REASON_CODES = {
     "UNDECLARED_LIEN": ("lien_status", "Lien missing or misdeclared — re-verify lienholder"),
+    "LIENHOLDER_MISMATCH": ("lien_holder", "Form and registry name different lienholders — verify which is current"),
     "WEAK_COMPS": ("comps", "Comparable set too weak — widen radius / re-pull"),
     "MISSING_TITLE_DOC": ("title_document", "Title document missing or unreadable"),
     "LOW_CONFIDENCE_FIELDS": ("extraction", "Key fields below confidence threshold"),

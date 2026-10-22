@@ -1,9 +1,18 @@
 """Verification agent (module 3/4).
 
 Fans out to the title DB, lienholder API, CLUE, and completeness checks, then
-runs conflict resolution: extracted vs. verified — the verified record wins and
-discrepancies become exception flags with reason codes (the same codes the
-reviewer uses on returns, so they feed the tally store).
+runs conflict resolution: extracted vs. verified — discrepancies become
+exception flags with reason codes (the same codes the reviewer uses on
+returns, so they feed the tally store).
+
+Conflict Resolver policy (explicit, per Checkpoint 2.1 reviewer feedback):
+when a submitted document and an authoritative record disagree, BOTH values
+are preserved in the conflict record — each with its source — and neither is
+silently overwritten. The authoritative record supplies the value the packet
+uses (registry precedence), the resolution rule applied is recorded on the
+conflict, and the conflict's status stays "unresolved": a case with an
+unresolved conflict is never treated as verified, and the packet surfaces
+the conflict for analyst verification before any approval.
 
 Reads promoted upfront checks from the return tally store at stage start
 (episodic memory: learning without retraining).
@@ -34,6 +43,26 @@ REQUIRED_DOCS = {
 def _val(fields: dict, name: str):
     f = fields.get(name) or {}
     return f.get("value")
+
+
+def _src(fields: dict, name: str, default: str = "submitted documents") -> str:
+    """Where an extracted value came from (document + page), for provenance."""
+    return (fields.get(name) or {}).get("source") or default
+
+
+def _norm_name(name) -> str:
+    return " ".join(str(name or "").lower().replace(".", " ").split())
+
+
+def _conflict(reason_code: str, field: str, detail: str,
+              submitted: dict, authoritative: dict, resolution: str) -> dict:
+    """One structured discrepancy: both values preserved, each with its
+    source; the resolution rule applied; status stays unresolved until an
+    analyst verifies it — it is never treated as verified information."""
+    return {"reason_code": reason_code, "field": field, "detail": detail,
+            "submitted": submitted, "authoritative": authoritative,
+            "resolution": resolution, "status": "unresolved",
+            "requires_analyst_verification": True}
 
 
 def verify_case(case_id: str, fields: dict, docs_present: list[str],
@@ -83,23 +112,56 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
         if brands:
             flags.append("title_brand_present")
 
-    # 2. Lienholder — extracted (declared) vs. verified (registry); registry wins.
+    # 2. Lienholder — Conflict Resolver: submitted documents vs. the
+    # authoritative registry. Both values are preserved with their sources;
+    # the registry supplies the packet value, but the discrepancy stays
+    # "unresolved" and flagged for analyst verification — never verified.
     lien = MockLienholderAPI(data_dir).lien_for(vin) if vin else None
     _emit_event(data_dir, case_id, "tool_call",
                 {"tool": "MockLienholderAPI.lien_for", "args": {"vin": vin},
                  "result": (f"{lien['holder']} ${lien['amount']:,}"
                             if lien else "no lien on record")})
+    declared_holder = _val(fields, "lien_holder")
+    form_src = _src(fields, "lien_holder", _src(fields, "lien_declared"))
+    registry_val = (f"{lien['holder']} ${lien['amount']:,}" if lien
+                    else "no lien on record")
     if lien and declared_lien is False:
-        conflicts.append({
-            "reason_code": "UNDECLARED_LIEN", "field": "lien_status",
-            "detail": (f"Claimant declared no lien; registry shows "
-                       f"{lien['holder']} ${lien['amount']:,}")})
+        conflicts.append(_conflict(
+            "UNDECLARED_LIEN", "lien_status",
+            f"Claimant declared no lien; registry shows {registry_val}",
+            submitted={"value": "no lien declared", "source": form_src},
+            authoritative={"value": registry_val, "source": "lienholder registry"},
+            resolution=("Registry value used for the payoff figure; the "
+                        "submitted 'no lien' is preserved here, not overwritten. "
+                        "Claimant confirmation requested; analyst verification "
+                        "required before approval.")))
         checks.append({"check": "lien_check", "status": "conflict",
                        "detail": conflicts[-1]["detail"]})
     elif not lien and declared_lien is True:
-        conflicts.append({
-            "reason_code": "PHANTOM_LIEN", "field": "lien_status",
-            "detail": "Claimant declared a lien; registry shows none"})
+        conflicts.append(_conflict(
+            "PHANTOM_LIEN", "lien_status",
+            "Claimant declared a lien; registry shows none",
+            submitted={"value": f"lien declared ({declared_holder or 'holder not named'})",
+                       "source": form_src},
+            authoritative={"value": registry_val, "source": "lienholder registry"},
+            resolution=("No payoff is deducted on an unregistered lien; the "
+                        "declaration is preserved here, not overwritten. "
+                        "Claimant confirmation requested; analyst verification "
+                        "required before approval.")))
+        checks.append({"check": "lien_check", "status": "conflict",
+                       "detail": conflicts[-1]["detail"]})
+    elif lien and declared_holder and _norm_name(declared_holder) != _norm_name(lien["holder"]):
+        conflicts.append(_conflict(
+            "LIENHOLDER_MISMATCH", "lien_holder",
+            (f"Claim form names lienholder '{declared_holder}'; registry shows "
+             f"'{lien['holder']}'"),
+            submitted={"value": declared_holder, "source": form_src},
+            authoritative={"value": registry_val, "source": "lienholder registry"},
+            resolution=("Registry holder used for the payoff; the form's "
+                        "lienholder is preserved here, not overwritten. The two "
+                        "may both be real (e.g. a refinance the registry has "
+                        "not caught up with) — analyst verification required "
+                        "before approval.")))
         checks.append({"check": "lien_check", "status": "conflict",
                        "detail": conflicts[-1]["detail"]})
     elif lien:
@@ -151,7 +213,11 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
 
     passed = not any(c["status"] in ("fail", "conflict") for c in checks)
     return {"case_id": case_id, "checks": checks, "conflicts": conflicts,
-            "flags": flags, "passed": passed}
+            "flags": flags, "passed": passed,
+            # Any preserved discrepancy must be verified by the analyst; the
+            # packet is assembled as "prepared — conflicts pending", never as
+            # verified, while this is true.
+            "requires_analyst_verification": bool(conflicts)}
 
 
 if __name__ == "__main__":

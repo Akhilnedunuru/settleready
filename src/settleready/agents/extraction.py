@@ -18,6 +18,12 @@ REQUIRED_FIELDS = [
     "vin", "mileage", "title_state", "policy_number",
     "holder_name", "loss_type", "loss_date", "lien_declared",
 ]
+# Asked alongside the required fields on the first pass but never gated on:
+# the lienholder NAME the claimant wrote on the form. Verification compares
+# it against the lienholder registry so a disagreement between the submitted
+# document and the authoritative record is preserved as a structured
+# conflict (both values + sources), not silently resolved.
+SUPPLEMENTARY_FIELDS = ["lien_holder"]
 CONFIDENCE_THRESHOLD = 0.8
 MAX_ITERATIONS = 3
 
@@ -124,10 +130,13 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
                    f"({len(state)}/{len(REQUIRED_FIELDS)} fields secured). "
                    f"Extracting from the next most promising document.")
         doc = docs[(iteration - 1) % len(docs)]
-        action = f"extract({missing}) from {doc['source']}"
+        ask = list(missing)
+        if iteration == 1:
+            ask += [f for f in SUPPLEMENTARY_FIELDS if f not in state]
+        action = f"extract({ask}) from {doc['source']}"
         text = "\n\n".join(f"[page {p['page']}]\n{p['text']}" for p in doc["pages"])
         user = (f"Document: {doc['source']} (case {case_id})\n\n{text}\n\n"
-                f"Extract these fields: {missing}")
+                f"Extract these fields: {ask}")
 
         try:
             raw = provider.complete(system=_SYSTEM, user=user,
@@ -138,16 +147,16 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
                 from settleready.memory.events import emit
                 emit(data_dir, case_id, "tool_call",
                      {"tool": "llm.complete",
-                      "args": {"purpose": f"extract {missing} from {doc['source']}",
+                      "args": {"purpose": f"extract {ask} from {doc['source']}",
                                "iteration": iteration},
-                      "result": (f"{len([f for f in missing if (result.get(f) or {}).get('value')])}"
-                                 f"/{len(missing)} fields returned")})
+                      "result": (f"{len([f for f in ask if (result.get(f) or {}).get('value')])}"
+                                 f"/{len(ask)} fields returned")})
         except Exception as e:  # LLM failure or bad JSON: observe, don't crash
             result, error = {}, f"LLM call failed: {e}"
 
         newly = []
         if error is None:
-            for f in missing:
+            for f in ask:
                 r = result.get(f) or {}
                 try:
                     conf = float(r.get("confidence") or 0.0)

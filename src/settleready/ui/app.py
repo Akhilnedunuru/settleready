@@ -314,8 +314,21 @@ def tab_packet():
     st.markdown("**Verification**")
     for c in packet["verification"].get("checks", []):
         st.write(f"`{c['status']:8s}` {c['check']}: {c['detail']}")
-    for cf in packet["verification"].get("conflicts", []):
-        st.error(f"CONFLICT {cf['reason_code']}: {cf['detail']}")
+    conflicts = packet["verification"].get("conflicts", [])
+    if conflicts:
+        st.markdown("**Conflicts — analyst verification required**")
+        st.caption("Both values are preserved with their sources. The registry "
+                   "value is used in the packet, but an unresolved conflict is "
+                   "never treated as verified information.")
+        for cf in conflicts:
+            st.error(f"CONFLICT {cf['reason_code']}: {cf['detail']}")
+            if cf.get("submitted"):
+                st.write(f"- Submitted: **{cf['submitted']['value']}** "
+                         f"_(source: {cf['submitted']['source']})_")
+                st.write(f"- Authoritative: **{cf['authoritative']['value']}** "
+                         f"_(source: {cf['authoritative']['source']})_")
+                st.write(f"- Resolution: {cf['resolution']} "
+                         f"(status: `{cf['status']}`)")
 
     st.markdown("**Legal research**")
     st.write(packet["legal"]["answer"] or "_not run_")

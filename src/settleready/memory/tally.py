@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS mandatory_checks (
 REASON_TO_CHECK = {
     "UNDECLARED_LIEN": ("verify_lienholder_first",
                         "Verify lienholder record before the standard fan-out"),
+    "LIENHOLDER_MISMATCH": ("verify_lienholder_first",
+                            "Verify lienholder record before the standard fan-out"),
     "WEAK_COMPS": ("widen_comparable_radius",
                    "Pull valuation comparables with a wider radius first"),
     "MISSING_TITLE_DOC": ("request_title_upfront",

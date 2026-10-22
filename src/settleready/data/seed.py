@@ -89,7 +89,9 @@ def case_specs(rng: random.Random, n: int = 3) -> list[dict]:
     demo) and never change. Beyond that, deterministic generated cases cycle
     through archetypes: clean (→ ready_for_review), undeclared lien
     (→ needs_info via conflict), missing title doc (→ needs_info via
-    completeness). Case IDs continue TL-2026-1046, ...
+    completeness), lienholder mismatch (→ needs_info via conflict: the form
+    names a different lienholder than the registry). Case IDs continue
+    TL-2026-1046, ...
     """
     cases = []
 
@@ -183,11 +185,13 @@ _GEN_COLORS = ["Silver", "Black", "White", "Gray", "Blue", "Red"]
 
 def _generated_case(rng: random.Random, i: int) -> dict:
     """One deterministic synthetic case. i is the 0-based index into case_specs
-    (3, 4, ...); archetype cycles clean / undeclared-lien / missing-docs."""
+    (3, 4, ...); archetype cycles clean / undeclared-lien / missing-docs /
+    lienholder-mismatch."""
     idx = i - 3
     loss_type = _GEN_LOSS_TYPES[idx % 3]
     state = _GEN_STATES[idx % 3]
-    archetype = idx % 3  # 0: clean, 1: undeclared lien, 2: missing title doc
+    archetype = idx % 4  # 0: clean, 1: undeclared lien, 2: missing title doc,
+    #                      3: lienholder mismatch (form vs registry)
     year, make, model, trim = _VEHICLES[idx % len(_VEHICLES)]
     mileage = rng.randint(35000, 95000)
     base = rng.randint(16000, 26000)
@@ -205,6 +209,14 @@ def _generated_case(rng: random.Random, i: int) -> dict:
         lien = {"holder": rng.choice(_GEN_LIENHOLDERS),
                 "amount": rng.randint(3000, 9000)}
         declared_lien = False
+    elif archetype == 3:  # conflict demo: form names a DIFFERENT lienholder
+        # than the registry (e.g. a refinance the registry has not caught up
+        # with) — both values are preserved for analyst verification.
+        lien = {"holder": rng.choice(_GEN_LIENHOLDERS),
+                "amount": rng.randint(3000, 9000)}
+        declared_lien = True
+        others = [h for h in _GEN_LIENHOLDERS if h != lien["holder"]]
+        case_extra["form_lien_holder"] = rng.choice(others)
     elif archetype == 0 and rng.random() < 0.5:  # properly declared lien
         lien = {"holder": rng.choice(_GEN_LIENHOLDERS),
                 "amount": rng.randint(2000, 8000)}
@@ -464,6 +476,13 @@ def _build_fnol(case: dict, pdf_dir: str) -> None:
                [("Owner name & address", f"{p['holder']} - {holder_addr}", 5.0),
                 ("Lienholder?", bool(case["declared_lien"]), 2.5)],
                [("Driver name & address", driver, 7.5)])
+    if case["declared_lien"]:
+        # The name the claimant wrote. Normally the registry holder; mismatch
+        # fixtures carry form_lien_holder (a different name) on purpose.
+        form_holder = (case.get("form_lien_holder")
+                       or (case["lien"] or {}).get("holder", ""))
+        _form_grid(story, styles,
+                   [("Lienholder name", form_holder, 7.5)])
 
     _form_section(story, styles, "Remarks")
     _form_grid(story, styles,
