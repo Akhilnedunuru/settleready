@@ -21,19 +21,23 @@ Respond with ONLY valid JSON: {"answer": "...", "cited_sources": ["TX.md", ...]}
 
 
 def research(question: str, title_state: str, data_dir: str = "data",
-             provider=None, k: int = 3, case_id: str = "") -> dict:
+             provider=None, k: int = 3, case_id: str = "",
+             persist_dir: str | None = None) -> dict:
     """Research a question against the title state's statutes.
 
     Returns {"question", "state", "answer", "citations": [...], "chunks": [...]}.
     Tool calls (vector retrieval, synthesis) are emitted to the event bus so
-    the UI can show them live.
+    the UI can show them live. persist_dir overrides the Chroma index path
+    (default <data_dir>/chroma) — used by eval harnesses that run against an
+    isolated world but the real index.
     """
     if provider is None:
         from settleready.llm.provider import get_provider
         provider = get_provider()
 
     chunks = retrieve(title_state, question,
-                      persist_dir=f"{data_dir}/chroma", k=k, provider=provider)
+                      persist_dir=persist_dir or f"{data_dir}/chroma",
+                      k=k, provider=provider)
     _emit_event(data_dir, case_id, "tool_call",
                 {"tool": "rag.retrieve",
                  "args": {"state": title_state.upper(), "k": k},
