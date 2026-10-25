@@ -106,10 +106,17 @@ class MockEmailClient:
 
 
 def get_email_client(data_dir: str = "data") -> "EmailClient":
-    """Factory: real IMAP/SMTP when SETTLEREADY_EMAIL_SOURCE=gmail, else the mock.
+    """Factory: transport selected by SETTLEREADY_EMAIL_SOURCE.
 
-    The watcher and UI only ever talk to the EmailClient protocol, so flipping
-    the env var swaps the transport with zero agent-code changes.
+    - "relay": shared demo mailbox via the operator's relay server
+      (tools/relay_server.py) — clones need only RELAY_URL + RELAY_TOKEN;
+      the Gmail app password never reaches their machines.
+    - "gmail": the operator's own mailbox via IMAP/SMTP (credentials in the
+      local, gitignored .env).
+    - anything else: the JSON-file mock (default; fully offline demo).
+
+    The watcher and UI only ever talk to the EmailClient protocol, so
+    flipping the env var swaps the transport with zero agent-code changes.
     """
     # Load .env here (mirroring get_provider()): credentials live in the local
     # .env, and no entry point should depend on the user exporting them by hand.
@@ -118,7 +125,11 @@ def get_email_client(data_dir: str = "data") -> "EmailClient":
         load_dotenv()
     except ImportError:
         pass
-    if os.environ.get("SETTLEREADY_EMAIL_SOURCE", "mock").lower() == "gmail":
+    source = os.environ.get("SETTLEREADY_EMAIL_SOURCE", "mock").lower()
+    if source == "relay":
+        from settleready.tools.relay_client import RelayEmailClient
+        return RelayEmailClient()
+    if source == "gmail":
         from settleready.tools.imap_client import ImapEmailClient
         return ImapEmailClient()
     return MockEmailClient(data_dir=data_dir)

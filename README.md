@@ -71,6 +71,33 @@ claim email arrives. The mock JSON inbox is the default; set
 `.env`) to process real emails via IMAP/SMTP — free, stdlib only, no new
 dependencies. Either way the agents only ever see the `EmailClient` protocol.
 
+### Shared demo mailbox for clones (relay)
+
+A clone that can run the watcher can read any secret shipped to its machine,
+so the Gmail app password must never reach a clone at all. Instead, the
+operator runs a relay server that alone holds the password, and clones talk
+to it over HTTP with a demo token:
+
+```bash
+# operator machine (once): create relay.env — never committed — with
+#   GMAIL_ADDRESS, GMAIL_APP_PASSWORD, RELAY_TOKEN
+# then run, behind HTTPS (e.g. Caddy + DuckDNS):
+bash scripts/relay_server.sh --port 8899
+```
+
+```bash
+# clone's .env — no Gmail password here, ever:
+SETTLEREADY_EMAIL_SOURCE=relay
+RELAY_URL=https://your-relay-host:8899
+RELAY_TOKEN=public-demo-token
+```
+
+The token is published on purpose: it is a kill-switch (rotate it and old
+clones stop working), not a secret. Abuse is bounded by rate limits
+(60 inbox reads / 10 sends per hour per IP) and a rule that sends must carry
+a case ID in the subject. See `src/settleready/tools/relay_server.py` for the
+full security model.
+
 ```bash
 export PYTHONPATH="$PWD/src"
 # terminal 1: the daemon (polls every 15s)
