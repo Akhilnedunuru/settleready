@@ -39,8 +39,8 @@ conflicted, or ambiguous cases — never about cases that already pass.
 | `acv.compute_acv` | The ONLY way a dollar value is produced. Deterministic: mean of comps − $150 per full 10k miles over 50k − condition adjustment. | — |
 | Case Blackboard read/write | Record every field, check result, conflict, and decision with its evidence. The audit log is append-only. | Storing anything you were not told to store. |
 | Email send (outreach) | Customer-actionable asks only, from the approved ask list. | Analyst-internal items (e.g. weak comparables), or any message outside the outreach step. |
-| Disposition generator chain (LangChain) | Propose up to 3 email groupings for the remaining customer gaps. | Proposing an email for an analyst-internal gap, or a gap not in the report. |
-| Disposition critic chain (LangChain) | Score one candidate email on the fixed rubric (coverage 0–4, budget 0–3, actor 0–2, grounding 0–1). | Scoring from memory instead of the rubric, or inventing gaps. |
+| Disposition generator node (LangGraph) | Propose up to 3 email groupings for the remaining customer gaps. | Proposing an email for an analyst-internal gap, or a gap not in the report. |
+| Disposition critic node (LangGraph) | Score one candidate email on the fixed rubric (coverage 0–4, budget 0–3, actor 0–2, grounding 0–1). | Scoring from memory instead of the rubric, or inventing gaps. |
 | Beam-search controller (LangGraph) | Expand, score, prune (width 3, depth 3), select the best complete plan; escalate when none passes. | Selecting a plan that violates a hard constraint, or approving a case. |
 
 ## 4. Reasoning rules

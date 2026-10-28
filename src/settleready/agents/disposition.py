@@ -21,20 +21,24 @@ through free-form dialogue. That keeps the audit trail deterministic, which
 a claims agent needs and a chatting committee cannot provide.
 
 Framework mapping (Checkpoint 4.1 plan, as implemented):
-- Generator / critic LLM calls -> LangChain LCEL chains (prompt -> provider
-  -> JSON parser), built on the EXISTING provider interface, so no second
-  API-key path is introduced. The 4.1 doc named CrewAI for the generator;
-  CrewAI's own process loop would fight the beam-search control flow owned
-  by the controller, so the generator is a LangChain chain instead. The
-  role separation the mapping was really about (generator never grades its
-  own homework) is preserved.
-- Controller -> LangGraph StateGraph (generate -> score -> prune -> select,
-  looping back while depth remains). Where LangGraph is not installed, the
-  SAME node functions run in a plain loop — the graph is the orchestration
-  runner, not the logic.
+- Generator, critic, and controller -> LangGraph. The generator and critic
+  are nodes (prompt + provider call + JSON parse, on the EXISTING provider
+  interface, so no second API-key path); the controller is the graph itself
+  (conditional edges: generate -> score -> prune -> select, looping back
+  while depth remains). One orchestration framework for all three roles;
+  role separation comes from separate nodes and prompts, not separate
+  frameworks. (The 4.1 design doc first named CrewAI for the generator and
+  LangChain chains for the critic/controller; both collapsed into LangGraph
+  nodes, because the chains were only the LLM-call mechanism inside the
+  nodes.) Where LangGraph is not installed, the SAME node functions run in
+  a plain loop — the graph is the orchestration runner, not the logic.
 - State manager -> Case Blackboard (the 4.1 doc's MCP role). A standalone
   MCP server exposing the blackboard is deferred, not faked: the blackboard
-  already is the shared, inspectable state store.
+  already is the shared, inspectable state store. Note the boundary the
+  graph does NOT erase: graph state is scratch space for one search run
+  (beam, depth, trail); the blackboard is the durable case memory across
+  runs. MCP is the access protocol for the latter, not a replacement for
+  the former.
 
 Search definition (Checkpoint 4.1):
 - A "thought" is one candidate next action plus the plan state it produces.
@@ -155,7 +159,7 @@ def _previously_asked_needs(case_id: str, data_dir: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Critic: heuristic scoring (always available) + LLM rubric chain (optional).
+# Critic: heuristic scoring (always available) + LLM rubric node (optional).
 # Rubric (Checkpoint 4.1): coverage 0-4, budget efficiency 0-3, actor
 # correctness 0-2, evidence grounding 0-1. Total 0-10.
 # ---------------------------------------------------------------------------
@@ -195,9 +199,11 @@ def deterministic_candidates(remaining: list[str]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# LangChain chains. Built lazily and only when a provider exists; any
-# failure (missing package, LLM error, bad JSON) falls back to the
-# deterministic path — the chains enhance the planner, they never gate it.
+# Generator / critic nodes: plain prompt + provider call + JSON parse.
+# These live inside the LangGraph nodes (see node_generate / node_score);
+# there is no separate chain layer. Any failure (no provider, LLM error,
+# bad JSON) falls back to the deterministic path — the LLM nodes enhance
+# the planner, they never gate it.
 # ---------------------------------------------------------------------------
 
 _GENERATOR_SYSTEM = (
@@ -206,12 +212,12 @@ _GENERATOR_SYSTEM = (
     "up to 3 email groupings: each grouping is a non-empty subset of the gap "
     "ids to ask in ONE email. Prefer groupings that resolve the case in the "
     "fewest emails. Reply with JSON only: "
-    '{{"actions": [{{"subset": ["gap-id", "..."], "rationale": "..."}}]}}')
+    '{"actions": [{"subset": ["gap-id", "..."], "rationale": "..."}]}')
 
 _CRITIC_SYSTEM = (
     "DISPOSITION_CRITIC. You are the critic agent in a disposition planner. "
     "Score ONE candidate email against this rubric and reply with JSON only: "
-    '{{"coverage": 0-4, "budget": 0-3, "actor": 0-2, "grounding": 0-1}}. '
+    '{"coverage": 0-4, "budget": 0-3, "actor": 0-2, "grounding": 0-1}. '
     "coverage: how much of the remaining gap set this email resolves. "
     "budget: 3 if the email covers 2+ gaps or is the last remaining gap, "
     "else 1 (each email costs one of 3 follow-ups). actor: 2, since every "
@@ -219,46 +225,17 @@ _CRITIC_SYSTEM = (
     "every gap comes from the verification report.")
 
 
-def _build_chains(provider):
-    """Return (generator_chain, critic_chain) or (None, None)."""
-    try:
-        from langchain_core.output_parsers import JsonOutputParser
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_core.runnables import RunnableLambda
-    except ImportError:
-        return None, None
-
-    def _call(prompt_value):
-        messages = prompt_value.to_messages()
-        system = next((m.content for m in messages if m.type == "system"), "")
-        user = "\n".join(m.content for m in messages if m.type != "system")
-        return provider.complete(system=system, user=user, temperature=0,
-                                 json_mode=True)
-
-    gen_prompt = ChatPromptTemplate.from_messages(
-        [("system", _GENERATOR_SYSTEM),
-         ("human", "Remaining gaps (JSON): {gaps}\nFollow-ups used so far: "
-                   "{followups} of 3. Propose up to 3 email groupings.")])
-    crit_prompt = ChatPromptTemplate.from_messages(
-        [("system", _CRITIC_SYSTEM),
-         ("human", "Candidate email covers gaps: {subset}\nRemaining gaps "
-                   "before this email: {remaining}\nScore it.")])
-    try:
-        gen_chain = gen_prompt | RunnableLambda(_call) | JsonOutputParser()
-        crit_chain = crit_prompt | RunnableLambda(_call) | JsonOutputParser()
-    except Exception:  # noqa: BLE001
-        return None, None
-    return gen_chain, crit_chain
-
-
-def _llm_candidates(chain, gaps: list[dict], followups: int) -> list[dict]:
-    """Generator chain output, validated; [] on any failure."""
-    if chain is None:
+def _llm_candidates(provider, gaps: list[dict], followups: int) -> list[dict]:
+    """Generator node output, validated; [] on any failure."""
+    if provider is None:
         return []
     try:
-        out = chain.invoke({"gaps": json.dumps(
-            [{"id": g["id"], "reason_code": g["reason_code"]} for g in gaps]),
-            "followups": followups})
+        gaps_json = json.dumps(
+            [{"id": g["id"], "reason_code": g["reason_code"]} for g in gaps])
+        user = (f"Remaining gaps (JSON): {gaps_json}\nFollow-ups used so "
+                f"far: {followups} of 3. Propose up to 3 email groupings.")
+        out = json.loads(provider.complete(system=_GENERATOR_SYSTEM, user=user,
+                                           temperature=0, json_mode=True))
         actions = out.get("actions", []) if isinstance(out, dict) else []
         valid_ids = {g["id"] for g in gaps}
         cands = []
@@ -272,18 +249,22 @@ def _llm_candidates(chain, gaps: list[dict], followups: int) -> list[dict]:
         return []
 
 
-def _llm_score(chain, subset: list[str], remaining: list[str]) -> dict | None:
-    """Critic chain output, clamped; None on any failure.
+def _llm_score(provider, subset: list[str],
+               remaining: list[str]) -> dict | None:
+    """Critic node output, clamped; None on any failure.
 
     All four rubric keys must be present: a JSON reply in some other shape
     (e.g. a provider returning an unrelated payload) is a failed scoring,
     NOT a zero score — silently zeroing would prune good plans.
     """
-    if chain is None:
+    if provider is None:
         return None
     try:
-        out = chain.invoke({"subset": json.dumps(subset),
-                            "remaining": json.dumps(remaining)})
+        user = (f"Candidate email covers gaps: {json.dumps(subset)}\n"
+                f"Remaining gaps before this email: {json.dumps(remaining)}\n"
+                f"Score it.")
+        out = json.loads(provider.complete(system=_CRITIC_SYSTEM, user=user,
+                                           temperature=0, json_mode=True))
         if not isinstance(out, dict):
             return None
         if not all(k in out for k in ("coverage", "budget", "actor",
@@ -316,7 +297,7 @@ def node_generate(state: dict, ctx: dict) -> dict:
         if not plan["remaining"]:
             continue
         remaining_gaps = [g for g in ctx["gaps"] if g["id"] in plan["remaining"]]
-        llm = _llm_candidates(ctx["gen_chain"], remaining_gaps,
+        llm = _llm_candidates(ctx["provider"], remaining_gaps,
                               plan["followups"])
         # LLM proposals first, deterministic ones filling up to the cap;
         # duplicates (e.g. "all" == "first two" for a 2-gap case) collapse.
@@ -341,11 +322,11 @@ def node_generate(state: dict, ctx: dict) -> dict:
 
 
 def node_score(state: dict, ctx: dict) -> dict:
-    """Score every candidate (critic chain, else heuristic) and extend plans."""
+    """Score every candidate (critic node, else heuristic) and extend plans."""
     extended: list[dict] = []
     for cand in state.get("candidates", []):
         plan = cand["plan"]
-        scored = _llm_score(ctx["crit_chain"], cand["subset"],
+        scored = _llm_score(ctx["provider"], cand["subset"],
                             plan["remaining"])
         if scored is None:
             scored = heuristic_score(cand["subset"], plan["remaining"])
@@ -525,8 +506,7 @@ def plan_disposition(case_id: str, report: dict, data_dir: str = "data",
     if followups >= MAX_FOLLOWUPS:
         return _finish("escalate", [])
 
-    gen_chain, crit_chain = _build_chains(provider) if provider else (None, None)
-    ctx = {"gaps": remaining, "gen_chain": gen_chain, "crit_chain": crit_chain}
+    ctx = {"gaps": remaining, "provider": provider}
     state = _initial_state(remaining, analyst_gaps, followups)
     try:
         final = _run_graph(state, ctx)

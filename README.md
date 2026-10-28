@@ -38,9 +38,9 @@ Clean cases bypass it entirely and pay nothing extra.
 Multi-agent, scoped to this one stage: generator, critic, and controller are separate
 roles that communicate only through structured plan states and scores — never free-form
 dialogue — so the decision stays reproducible in the audit log. Implementation uses
-**LangGraph** for the beam-search graph and **LangChain** LCEL chains for the generator
-and critic, both built on the existing provider interface (no second API key path); the
-Case Blackboard is the state manager. No provider, an LLM failure, or a missing LangGraph
+**LangGraph** for the graph and its generator and critic nodes, all calling the existing
+provider interface (no second API key path); the Case Blackboard is the state manager
+(the 4.1 design's MCP role, with a standalone MCP server deferred). No provider, an LLM failure, or a missing LangGraph
 install all fall back to deterministic generation + heuristic scoring, and any planner
 failure falls back to the old mapping — the planner can never break the pipeline.
 
@@ -161,7 +161,7 @@ data/             generated at runtime (gitignored): fixtures, chroma index, inb
 | 1 · Concept | scaffold, fixture generator | `scripts/`, `src/settleready/data/` |
 | 2 · Reasoning / memory / tools | ReAct loop, tool interfaces, Blackboard | `src/settleready/llm/`, `tools/`, `memory/` |
 | 3 · Retrieval / RAG | statute corpus + state-filtered retriever | `src/settleready/tools/rag.py`, `data/` |
-| 4 · Multi-agent | ToT Disposition Planner (LangGraph beam search + LangChain chains) + review loop | `src/settleready/agents/disposition.py`, `pipeline.py` |
+| 4 · Multi-agent | ToT Disposition Planner (LangGraph nodes + graph) + review loop | `src/settleready/agents/disposition.py`, `pipeline.py` |
 | 5 · Eval / guardrails | eval harness, PII redaction, audit log, UI | `src/settleready/eval/`, `ui/` |
 
 ## Environment variables

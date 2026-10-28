@@ -140,7 +140,7 @@ class FakeProvider:
         return "{}"
 
 
-def test_llm_chains_drive_the_plan(tmp_path):
+def test_llm_nodes_drive_the_plan(tmp_path):
     dd = _world(tmp_path)
     fake = FakeProvider()
     out = plan_disposition("C1", _report(conflicts=[_MISMATCH],
@@ -165,7 +165,7 @@ def test_graph_runner_matches_loop_runner():
     pytest.importorskip("langgraph")
     gaps, analyst = gaps_from_report(_report(conflicts=[_MISMATCH],
                                              failed_checks=[_TITLE_FAIL]))
-    ctx = {"gaps": gaps, "gen_chain": None, "crit_chain": None}
+    ctx = {"gaps": gaps, "provider": None}
     via_graph = _run_graph(_initial_state(gaps, analyst, 0), ctx)
     via_loop = _run_loop(_initial_state(gaps, analyst, 0), ctx)
     assert via_graph["outcome"] == via_loop["outcome"] == "email"
