@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from settleready.agents.intake import (
     IntakeWatcher,
+    _strip_quoted,
     extract_case_id,
     is_reply,
     route_claim,
@@ -254,3 +255,38 @@ def test_poll_inbox_downloads_only_claim_emails(monkeypatch):
     assert [r.subject for r in recs] == ["Claim filed via mobile app — TL-2026-1045"]
     assert recs[0].body == "claim body here"
     assert fetched_full == [b"1"]  # the junk mail's body was never downloaded
+
+
+def test_strip_quoted_variants():
+    assert _strip_quoted("Yes, there is a lien.") == "Yes, there is a lien."
+    assert _strip_quoted("Answer.\n> quoted line\n> more quote") == "Answer."
+    assert _strip_quoted(
+        "Answer.\nOn Wed, Oct 28, 2026 at 5:57 PM <a@b> wrote:\n> quote"
+    ) == "Answer."
+    assert _strip_quoted("> only a quote, no new words") == ""
+
+
+def test_reply_stores_only_new_text_not_quoted_thread(tmp_path):
+    body = ("The lienholder is Lone Star Credit Union, and the current payoff "
+            "amount is $7,417. Sorry for the omission.\n"
+            "\n"
+            "On Wed, Oct 28, 2026 at 5:57 PM <settlesready.demo@gmail.com> wrote:\n"
+            "> This is SettleReady, assisting with your total-loss claim TL-2026-1045.\n"
+            "> 1. Our title records show a lien on the vehicle (Claimant declared no\n"
+            "> lien; registry shows Lone Star Credit Union $7,417) that was not declared\n")
+    _mail(tmp_path, subject="Re: claim documents — TL-2026-1045", body=body)
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    bb.create_case("TL-2026-1045", loss_type="theft", title_state="TX")
+    bb.set_stage("TL-2026-1045", "needs_info")
+    bb.close()
+    calls = []
+    w = _watcher(tmp_path, calls)
+    actions = w.poll_once()
+    assert actions[0]["action"] == "reply_retriggered"
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    stmts = bb.read("TL-2026-1045", "customer_statements")
+    bb.close()
+    assert len(stmts) == 1
+    assert "Lone Star Credit Union" in stmts[0]["body"]
+    assert "Claimant declared no lien" not in stmts[0]["body"]
+    assert "wrote:" not in stmts[0]["body"]

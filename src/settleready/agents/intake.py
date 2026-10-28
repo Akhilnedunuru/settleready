@@ -54,6 +54,28 @@ def is_reply(email: EmailRecord) -> bool:
     return (email.subject or "").strip().lower().startswith("re:")
 
 
+def _strip_quoted(body: str) -> str:
+    """Keep only the customer's new words from a mailed reply.
+
+    Mail clients quote the original thread below the answer, and the
+    extractor cannot tell quote from answer: it once latched onto
+    "Claimant declared no lien" in the quoted email instead of the
+    customer's confirmation above it. Cut at the first quote marker: a
+    ">"-quoted line, a Gmail "On ... wrote:" line, or an Original Message
+    separator.
+    """
+    out = []
+    for line in (body or "").splitlines():
+        s = line.strip()
+        if s.startswith(">") or s in ("-----Original Message-----",
+                                      "---Original Message---"):
+            break
+        if s.startswith("On ") and s.endswith("wrote:"):
+            break
+        out.append(line)
+    return "\n".join(out).strip()
+
+
 def is_claim_email(email: EmailRecord) -> bool:
     """Does this email belong to the pipeline? The contract is: the subject
     carries a case ID (TL-YYYY-NNNN) — for new claims and for replies alike.
@@ -217,9 +239,12 @@ class IntakeWatcher:
         # ...and a text-only reply still counts: the statement is fed to
         # extraction as a customer document on the next run (e.g. confirming
         # a lien in words), so the loop can resolve without new PDFs.
-        if (email.body or "").strip():
+        # Store only the customer's new words, not the quoted thread below
+        # them (see _strip_quoted).
+        cleaned = _strip_quoted(email.body or "")
+        if cleaned:
             stmts = bb.read(case_id, "customer_statements") or []
-            stmts.append({"from": email.from_, "body": email.body.strip()[:2000]})
+            stmts.append({"from": email.from_, "body": cleaned[:2000]})
             bb.write(case_id, "customer_statements", stmts)
         _emit_event(self._data_dir, case_id, "reply_received",
                     {"from": email.from_, "attachments": saved,
