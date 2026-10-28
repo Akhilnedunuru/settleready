@@ -81,3 +81,43 @@ def test_missing_fields_all_flagged():
         1 for f in REQUIRED_FIELDS
         if f in out["fields"] and out["fields"][f]["confidence"] >= CONFIDENCE_THRESHOLD
     ) == len(REQUIRED_FIELDS)
+
+
+class OverrideRoutingProvider:
+    """Reply first: a hedged (0.7) lien confirmation, then the form's crisp
+    'no lien' at 1.0. Before the sticky-override fix, the form overwrote the
+    reply and the UNDECLARED_LIEN conflict survived the customer's answer."""
+
+    def complete(self, *, system, user, max_tokens=1024, temperature=0.2, json_mode=False):
+        if "customer_reply" in user:
+            fields = {
+                "lien_declared": {"value": True, "confidence": 0.7,
+                                  "span": "there is a lien"},
+                "lien_holder": {"value": "Lone Star Credit Union", "confidence": 0.7,
+                                "span": "Lone Star"},
+            }
+        else:
+            fields = {
+                "vin": {"value": "V", "confidence": 1.0, "span": "V"},
+                "mileage": {"value": 50000, "confidence": 1.0, "span": "50000"},
+                "title_state": {"value": "GA", "confidence": 1.0, "span": "GA"},
+                "policy_number": {"value": "GA-B-1", "confidence": 1.0, "span": "GA-B-1"},
+                "holder_name": {"value": "X", "confidence": 1.0, "span": "X"},
+                "loss_type": {"value": "FIRE", "confidence": 1.0, "span": "FIRE"},
+                "loss_date": {"value": "2026-09-20", "confidence": 1.0, "span": "2026-09-20"},
+                "lien_declared": {"value": False, "confidence": 1.0, "span": "YES NO X"},
+            }
+        return json.dumps({"fields": fields})
+
+
+def test_override_value_sticks_despite_higher_confidence_form():
+    docs = [
+        {"source": "customer_reply_1.txt", "override": True,
+         "pages": [{"page": 1, "text": "Yes, there is a lien with Lone Star."}]},
+        {"source": "claim_form.pdf",
+         "pages": [{"page": 1, "text": "form"}]},
+    ]
+    out = extract_fields(docs, provider=OverrideRoutingProvider())
+    assert out["fields"]["lien_declared"]["value"] is True
+    assert "customer_reply" in out["fields"]["lien_declared"]["source"]
+    assert out["fields"]["lien_holder"]["value"] == "Lone Star Credit Union"

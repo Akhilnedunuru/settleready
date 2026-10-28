@@ -111,6 +111,9 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
 
     docs = sorted(parsed_docs, key=_doc_rank)
     state: dict = {}
+    # Fields whose current value came from a customer statement. A plain
+    # document may not overturn those, even at higher confidence.
+    overridden: set[str] = set()
     trace: list[dict] = []
 
     for iteration in range(1, MAX_ITERATIONS + 1):
@@ -167,16 +170,22 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
                     continue
                 prev = state.get(f)
                 # Customer statements override: the claimant's latest word on a
-                # field they address supersedes the form. The verification
-                # layer still cross-checks against authoritative records, so a
-                # mistaken statement can't launder a real conflict.
-                if prev is None or doc.get("override") or conf > prev["confidence"]:
+                # field they address supersedes the form — and sticks. A plain
+                # document may not overturn an override-sourced value even at
+                # higher confidence, or a hedged (<0.8) reply would lose to the
+                # form it was correcting. The verification layer still
+                # cross-checks against authoritative records, so a mistaken
+                # statement surfaces as a visible conflict, never a silent pass.
+                if (prev is None or doc.get("override")
+                        or (f not in overridden and conf > prev["confidence"])):
                     state[f] = {
                         "value": val,
                         "confidence": round(min(conf, 1.0), 2),
                         "source": f"{doc['source']} p.{_page_of_span(doc, r.get('span', ''))}",
                         "span": r.get("span", ""),
                     }
+                    if doc.get("override"):
+                        overridden.add(f)
                     newly.append(f"{f}={val!r}@{state[f]['confidence']}")
 
         still_missing = [f for f in REQUIRED_FIELDS
