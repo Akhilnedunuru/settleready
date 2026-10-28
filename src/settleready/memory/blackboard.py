@@ -71,15 +71,19 @@ class CaseBlackboard:
                     {"loss_type": loss_type, "title_state": title_state})
 
     def set_stage(self, case_id: str, stage: str, event: str = "stage_transition",
-                  details: dict | None = None) -> None:
+                  details: dict | None = None) -> int:
+        """Move the case to a stage and log the transition. Returns the audit
+        row id, so the caller can fill in the stage's outcome once the stage
+        finishes (see set_audit_details) instead of leaving details empty."""
         self._db.execute(
             "UPDATE cases SET stage=?, updated_at=? WHERE case_id=?",
             (stage, _now(), case_id),
         )
         self._db.commit()
-        self.log(case_id, stage, event, details or {})
+        row_id = self.log(case_id, stage, event, details or {})
         _emit_event(self._data_dir, case_id, "stage",
                     {"stage": stage, "event": event, **(details or {})})
+        return row_id
 
     def get_case(self, case_id: str) -> dict | None:
         row = self._db.execute(
@@ -121,10 +125,21 @@ class CaseBlackboard:
         return {k: json.loads(v) for k, v in rows}
 
     # -- audit --------------------------------------------------------------
-    def log(self, case_id: str, stage: str, event: str, details: dict | None = None) -> None:
-        self._db.execute(
+    def log(self, case_id: str, stage: str, event: str, details: dict | None = None) -> int:
+        cur = self._db.execute(
             "INSERT INTO audit (case_id, ts, stage, event, details) VALUES (?, ?, ?, ?, ?)",
             (case_id, _now(), stage, event, json.dumps(details or {})),
+        )
+        self._db.commit()
+        return cur.lastrowid
+
+    def set_audit_details(self, row_id: int, details: dict) -> None:
+        """Fill in the outcome on an audit row written earlier (e.g. a stage
+        transition logged at stage entry, whose outcome only exists once the
+        stage finishes). A no-op for an unknown row id."""
+        self._db.execute(
+            "UPDATE audit SET details=? WHERE id=?",
+            (json.dumps(details), row_id),
         )
         self._db.commit()
 

@@ -67,7 +67,7 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     bb.create_case(case_id)
 
     # -- intake: parse the case's PDFs -------------------------------------
-    bb.set_stage(case_id, "intake")
+    intake_row = bb.set_stage(case_id, "intake")
     pdf_dir = os.path.join(data_dir, "pdfs", case_id)
     pdfs = sorted(glob.glob(os.path.join(pdf_dir, "*.pdf")))
     if not pdfs:
@@ -85,6 +85,7 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     bb.write(case_id, "docs_present", docs_present)
     _emit_event(data_dir, case_id, "documents_parsed",
                 {"count": len(docs), "docs": docs_present})
+    bb.set_audit_details(intake_row, {"documents": docs_present})
     # Customer follow-up statements (text replies) join the extraction corpus
     # as their own document, so a confirmation in words ("yes, the lien is
     # with Lone Star") can resolve a conflict without new PDFs.
@@ -94,25 +95,35 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     summary["stages"].append(f"intake: parsed {len(docs)} documents {docs_present}")
 
     # -- extraction: ReAct loop --------------------------------------------
-    bb.set_stage(case_id, "extraction")
+    extraction_row = bb.set_stage(case_id, "extraction")
     extraction = extract_fields(docs, provider=provider, case_id=case_id,
                                 data_dir=data_dir)
     bb.write(case_id, "fields", extraction["fields"])
     bb.write(case_id, "extraction_trace", extraction["trace"])
     bb.write(case_id, "extraction_flags", extraction["flags"])
     n_ok = sum(1 for v in extraction["fields"].values() if v["confidence"] >= 0.8)
+    bb.set_audit_details(extraction_row, {
+        "fields_at_confidence": n_ok,
+        "fields_total": len(extraction["fields"]),
+        "below_threshold": extraction["flags"]})
     summary["stages"].append(
         f"extraction: {n_ok} fields at confidence>=0.8, flags={extraction['flags']}")
     summary["trace"] = extraction["trace"]  # ReAct Thought->Action->Observation steps
 
     # -- verification: fan-out ----------------------------------------------
-    bb.set_stage(case_id, "verification")
+    verification_row = bb.set_stage(case_id, "verification")
     report = verify_case(case_id, extraction["fields"], docs_present, data_dir=data_dir)
     bb.write(case_id, "verification", report)
     _emit_event(data_dir, case_id, "verification_checks",
                 {"passed": report["passed"],
                  "checks": [{"check": c["check"], "status": c["status"]}
                             for c in report["checks"]]})
+    bb.set_audit_details(verification_row, {
+        "passed": report["passed"],
+        "pass": sum(1 for c in report["checks"] if c["status"] == "pass"),
+        "fail": sum(1 for c in report["checks"] if c["status"] == "fail"),
+        "conflict": sum(1 for c in report["checks"] if c["status"] == "conflict"),
+        "conflicts": [c["reason_code"] for c in report["conflicts"]]})
     summary["stages"].append(
         f"verification: passed={report['passed']}, "
         f"conflicts={[c['reason_code'] for c in report['conflicts']]}, flags={report['flags']}")
@@ -169,7 +180,7 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
         return summary
 
     # -- research: state law for this title state --------------------------------
-    bb.set_stage(case_id, "research")
+    research_row = bb.set_stage(case_id, "research")
     title_state = (extraction["fields"].get("title_state") or {}).get("value", "")
     if not title_state:
         # Fallback: our policy numbers are prefixed with the state (TX-A-...).
@@ -188,11 +199,13 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     bb.write(case_id, "legal_research", legal)
     _emit_event(data_dir, case_id, "legal_research",
                 {"citations": legal["citations"]})
+    bb.set_audit_details(research_row, {
+        "title_state": title_state, "citations": legal["citations"]})
     summary["stages"].append(
         f"research: {title_state} threshold answered with citations {legal['citations']}")
 
     # -- compute: deterministic ACV (money math never via LLM) -------------------
-    bb.set_stage(case_id, "compute")
+    compute_row = bb.set_stage(case_id, "compute")
     fields = extraction["fields"]
     comps = MockValuationService(data_dir).comparables(case_id)
     mileage = (fields.get("mileage") or {}).get("value") or 0
@@ -202,6 +215,8 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
                  "args": {"comparables": len(comps), "mileage": mileage},
                  "result": f"ACV=${acv:,}"})
     bb.write(case_id, "acv", {"acv": acv, "worksheet": worksheet})
+    bb.set_audit_details(compute_row, {
+        "acv": acv, "comparables": len(comps), "mileage": mileage})
     summary["stages"].append(f"compute: ACV=${acv:,} ({worksheet['formula']})")
 
     next_stage = "ready_for_review"
