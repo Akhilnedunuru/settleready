@@ -22,6 +22,28 @@ Cross-cutting: **Case Blackboard** (persistent case memory), **return tally tabl
 retraining), append-only **audit log**, PII redaction, pluggable LLM provider.
 Full detail: [`docs/architecture.md`](docs/architecture.md).
 
+### Disposition Planner (Checkpoint 4.1 ToT)
+
+Between verification and routing, non-clean cases (verification failed) go through a
+Tree-of-Thought **Disposition Planner** (`src/settleready/agents/disposition.py`) instead of the
+old fixed conflict→ask mapping. It runs a beam search (width 3, depth 3) over email
+groupings: a **generator** proposes candidate emails, a **critic** scores each against a
+fixed rubric (coverage, budget efficiency, actor correctness, grounding), and a
+**controller** keeps the top 3 plans per level. The selected plan routes the case to
+`needs_info` (one combined email — e.g. lien question + title request together, instead of
+burning two follow-ups), `analyst_rework` (analyst-internal gaps like no comparables, which
+are never emailed to the customer), or `escalated` (budget exhausted or no plan passes).
+Clean cases bypass it entirely and pay nothing extra.
+
+Multi-agent, scoped to this one stage: generator, critic, and controller are separate
+roles that communicate only through structured plan states and scores — never free-form
+dialogue — so the decision stays reproducible in the audit log. Implementation uses
+**LangGraph** for the beam-search graph and **LangChain** LCEL chains for the generator
+and critic, both built on the existing provider interface (no second API key path); the
+Case Blackboard is the state manager. No provider, an LLM failure, or a missing LangGraph
+install all fall back to deterministic generation + heuristic scoring, and any planner
+failure falls back to the old mapping — the planner can never break the pipeline.
+
 ## Quickstart
 
 ```bash
@@ -139,7 +161,7 @@ data/             generated at runtime (gitignored): fixtures, chroma index, inb
 | 1 · Concept | scaffold, fixture generator | `scripts/`, `src/settleready/data/` |
 | 2 · Reasoning / memory / tools | ReAct loop, tool interfaces, Blackboard | `src/settleready/llm/`, `tools/`, `memory/` |
 | 3 · Retrieval / RAG | statute corpus + state-filtered retriever | `src/settleready/tools/rag.py`, `data/` |
-| 4 · Multi-agent | LangGraph orchestration + review loop | `src/settleready/agents/`, `pipeline.py` |
+| 4 · Multi-agent | ToT Disposition Planner (LangGraph beam search + LangChain chains) + review loop | `src/settleready/agents/disposition.py`, `pipeline.py` |
 | 5 · Eval / guardrails | eval harness, PII redaction, audit log, UI | `src/settleready/eval/`, `ui/` |
 
 ## Environment variables

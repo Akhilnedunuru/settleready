@@ -123,16 +123,47 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
         bb.set_stage(case_id, next_stage, event="routed",
                      details={"passed": False,
                               "conflicts": [c["reason_code"] for c in report["conflicts"]]})
-        # Analyst agent's targeted follow-up (checkpoint-1 workflow): ask the
-        # claimant for exactly what's missing. Deduplicated per need-set, so
-        # re-runs don't re-send. The customer's reply re-triggers the pipeline
-        # via the intake watcher, closing the loop.
+        # Disposition Planner (Checkpoint 4.1 ToT): for non-clean cases, a
+        # beam search over email groupings decides what to ask the claimant,
+        # what to flag for analyst rework, or whether to escalate — replacing
+        # the old fixed conflict->ask mapping. Any planner failure falls back
+        # to that mapping, so the planner can never break the pipeline. The
+        # customer's reply re-triggers the pipeline via the intake watcher,
+        # closing the loop.
         holder = (extraction["fields"].get("holder_name") or {}).get("value", "")
-        outreach = maybe_send_info_request(
-            data_dir, case_id, needs_from_report(report), holder_name=holder or "")
-        summary["outreach"] = outreach
-        if outreach.get("escalated"):
+        try:
+            from settleready.agents.disposition import plan_disposition
+            plan = plan_disposition(case_id, report, data_dir=data_dir,
+                                    provider=provider)
+        except Exception as e:  # noqa: BLE001
+            _emit_event(data_dir, case_id, "disposition_fallback",
+                        {"error": str(e)[:200]})
+            plan = {"outcome": "no_action"}
+        if plan["outcome"] == "email":
+            outreach = maybe_send_info_request(
+                data_dir, case_id, plan["needs"], holder_name=holder or "")
+            summary["outreach"] = outreach
+            if outreach.get("escalated"):
+                next_stage = "escalated"
+        elif plan["outcome"] == "analyst_rework":
+            bb.set_stage(case_id, "analyst_rework", event="disposition",
+                         details={"analyst_flags": [g["id"] for g in
+                                                    plan["analyst_flags"]]})
+            next_stage = "analyst_rework"
+            summary["outreach"] = {"sent": False,
+                                   "reason": "analyst-internal gaps flagged"}
+        elif plan["outcome"] == "escalate":
+            bb.set_stage(case_id, "escalated", event="disposition_escalated",
+                         details={"reason": "disposition planner escalated"})
             next_stage = "escalated"
+            summary["outreach"] = {"sent": False, "reason": "escalated"}
+        else:  # no_action: previous behaviour (dedupes to "already asked")
+            outreach = maybe_send_info_request(
+                data_dir, case_id, needs_from_report(report), holder_name=holder or "")
+            summary["outreach"] = outreach
+            if outreach.get("escalated"):
+                next_stage = "escalated"
+        summary["disposition"] = plan
         summary["next"] = next_stage
         summary["audit"] = bb.audit_log(case_id)
         return summary
