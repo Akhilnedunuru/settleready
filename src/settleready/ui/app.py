@@ -8,6 +8,8 @@ data/events.jsonl (see settleready.memory.events). Each dynamic fragment ticks
 every 2s but only re-renders from cheap local reads; there is no blind polling
 timer and no IMAP polling from the UI. While a case's pipeline is running, the
 Packet tab shows a live activity panel streaming the agent's ReAct thinking.
+After the run finishes, the panel keeps the full activity history so the flow
+can be replayed.
 
 Tabs, in process order:
   Emails        claim emails (from the event log) + intake watcher status
@@ -162,10 +164,22 @@ def _render_event(ev: dict) -> None:
     elif e == "state_fallback":
         st.write(f"`{ts}` 🧭 title_state empty — derived `{d.get('state')}` "
                  f"from {d.get('from')}")
+    elif e == "disposition_planned":
+        needs = ", ".join(d.get("needs", [])) or "none"
+        flags = ", ".join(d.get("analyst_flags", [])) or "none"
+        st.write(f"`{ts}` 🗺️ disposition planned → `{d.get('outcome')}` — "
+                 f"asks: {needs}; analyst flags: {flags}")
+    elif e == "disposition_fallback":
+        st.write(f"`{ts}` 🗺️ disposition planner failed, fell back: {d.get('error')}")
 
 
-def _render_event_feed(case_id: str, limit: int = 25) -> None:
+def _render_event_feed(case_id: str, limit: int = 25,
+                        oldest_first: bool = False) -> None:
+    """Render one case's event feed. Newest-first by default (live view);
+    oldest_first=True reads a finished run top-to-bottom, in flow order."""
     evs = events.tail(DATA_DIR, case_id=case_id, limit=limit)
+    if oldest_first:
+        evs = list(reversed(evs))
     if not evs:
         st.caption("No activity yet for this case.")
     for ev in evs:
@@ -179,8 +193,9 @@ def live_panel() -> None:
     While the pipeline is actively running (marker file written at pipeline
     start, removed at the end), this shows a running status box streaming the
     agent's activity — documents parsed, ReAct Thought/Action/Observation,
-    verification checks — as the events arrive. Otherwise a quiet one-liner
-    with the current stage.
+    verification checks — as the events arrive. Otherwise the one-liner plus
+    the case's full activity history, oldest first, so the finished run can
+    be replayed.
     """
     case_id = _selected()
     if case_id is None:
@@ -200,7 +215,10 @@ def live_panel() -> None:
         last = events.tail(DATA_DIR, case_id=case_id, limit=1)
         last_ev = last[0]["event"] if last else "—"
         st.caption(f"Stage `{stage}` · last activity: {last_ev} · "
-                   "this panel goes live while the pipeline runs.")
+                   "full run history below; this panel streams live "
+                   "while the pipeline runs.")
+        st.markdown("**Run activity — how this case flowed**")
+        _render_event_feed(case_id, limit=50, oldest_first=True)
 
 
 @st.fragment(run_every=2)
