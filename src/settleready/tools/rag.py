@@ -65,11 +65,13 @@ def build_index(corpus_dir: str, persist_dir: str, provider=None) -> int:
     files = sorted(glob.glob(os.path.join(corpus_dir, "*.md")))
     if not files:
         raise FileNotFoundError(f"No statute files in {corpus_dir} — run scripts/seed.sh first.")
+    print(f"[build_index] opening index at {persist_dir} ...", flush=True)
     collection = _collection(persist_dir, provider)
     # rebuild deterministically
     try:
         ids = collection.get()["ids"]
         if ids:
+            print(f"[build_index] removing {len(ids)} old chunks ...", flush=True)
             collection.delete(ids=ids)
     except Exception:
         pass
@@ -78,12 +80,15 @@ def build_index(corpus_dir: str, persist_dir: str, provider=None) -> int:
         state = os.path.splitext(os.path.basename(path))[0]  # TX.md -> TX
         with open(path) as f:
             chunks = _chunk_markdown(f.read())
+        print(f"[build_index] embedding {len(chunks)} chunks from "
+              f"{os.path.basename(path)} ...", flush=True)
         collection.add(
             ids=[f"{state}-{i}" for i in range(len(chunks))],
             documents=chunks,
             metadatas=[{"state": state, "source": os.path.basename(path)} for _ in chunks],
         )
         n += len(chunks)
+        print(f"[build_index] indexed {n} chunks so far", flush=True)
     return n
 
 
