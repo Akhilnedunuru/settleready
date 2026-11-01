@@ -227,11 +227,42 @@ def live_panel() -> None:
         _render_event_feed(case_id, limit=50, oldest_first=True)
 
 
+def _render_email_message(ev: dict) -> None:
+    """One email row inside a case's thread (called within the case expander)."""
+    d = ev.get("detail") or {}
+    ts = time.strftime("%H:%M:%S", time.localtime(ev["ts"]))
+    kind = ev["event"]
+    if kind == "reply_received":
+        atts = ", ".join(d.get("attachments", [])) or "no attachments"
+        with st.expander(f"💬 Customer reply — {ts}", expanded=False):
+            st.write(f"From: {d.get('from')}")
+            if d.get("body"):
+                st.text(d["body"])
+            else:
+                st.caption("No body recorded for this reply.")
+            st.write(f"Attachments: {atts}")
+    elif kind == "email_sent":
+        with st.expander(f"📤 Info request sent — {ts}", expanded=False):
+            st.write(f"To: {d.get('to')}")
+            for n in d.get("needs", []):
+                st.write(f"- {n}")
+    else:  # email_received
+        with st.expander(f"📥 {d.get('subject')} — {ts}", expanded=False):
+            st.write(f"From: {d.get('from')}")
+            n_att = d.get("attachments", 0)
+            if n_att:
+                st.caption(f"{n_att} PDF attachment(s) saved to "
+                           f"`data/pdfs/{ev.get('case_id')}/`")
+            if d.get("body"):
+                st.write(d["body"])
+
+
 @st.fragment(run_every=2)
 def tab_emails():
     st.header("Emails — intake")
     st.caption("Event-driven: this list rebuilds from the watcher's event log — "
-               "a new claim email appears here the moment it's processed. "
+               "a new claim email appears here the moment it's processed, "
+               "grouped into one thread per case. "
                "No inbox polling, no refresh timer.")
     try:
         from settleready.agents.intake import IntakeWatcher
@@ -241,36 +272,26 @@ def tab_emails():
     except Exception:  # noqa: BLE001
         pass
 
-    claim_events = [e for e in events.tail(DATA_DIR, limit=100)
+    claim_events = [e for e in events.tail(DATA_DIR, limit=500)
                     if e["event"] in ("email_received", "reply_received", "email_sent")]
     if not claim_events:
         st.info("No claim emails yet — send one whose subject contains the case ID "
                 "(e.g. `Claim filed via mobile app — TL-2026-1045`) with the claim PDFs attached.")
-    for ev in claim_events:
-        d = ev.get("detail") or {}
-        ts = time.strftime("%H:%M:%S", time.localtime(ev["ts"]))
-        kind = ev["event"]
-        if kind == "reply_received":
-            atts = ", ".join(d.get("attachments", [])) or "no attachments"
-            with st.expander(f"💬 Customer reply — {ev.get('case_id')} — {ts}"):
-                st.write(f"From: {d.get('from')}")
-                st.write(f"Attachments: {atts}")
-        elif kind == "email_sent":
-            with st.expander(f"📤 Info request sent — {ev.get('case_id')} — {ts}"):
-                st.write(f"To: {d.get('to')}")
-                for n in d.get("needs", []):
-                    st.write(f"- {n}")
-            continue
-        else:
-            with st.expander(f"{d.get('subject')} — {ts}"):
-                st.write(f"From: {d.get('from')}")
-                st.write(f"Case: `{ev.get('case_id')}`")
-                n_att = d.get("attachments", 0)
-                if n_att:
-                    st.caption(f"{n_att} PDF attachment(s) saved to "
-                               f"`data/pdfs/{ev.get('case_id')}/`")
-                if d.get("body"):
-                    st.write(d["body"])
+    else:
+        # One thread per case: the initial claim email, follow-up info
+        # requests, and customer replies grouped together, oldest first.
+        # Threads order by latest activity, newest first.
+        threads: dict[str, list] = {}
+        for ev in claim_events:
+            threads.setdefault(ev.get("case_id") or "?", []).append(ev)
+        for case_id, evs in sorted(threads.items(),
+                                   key=lambda kv: max(e["ts"] for e in kv[1]),
+                                   reverse=True):
+            evs.sort(key=lambda e: e["ts"])
+            with st.expander(f"📧 {case_id} — {len(evs)} message(s)",
+                             expanded=False):
+                for ev in evs:
+                    _render_email_message(ev)
 
     if st.button("🔄 Check inbox now"):
         # Manual IMAP peek only — the watcher owns continuous polling.

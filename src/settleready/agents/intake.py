@@ -248,6 +248,7 @@ class IntakeWatcher:
             bb.write(case_id, "customer_statements", stmts)
         _emit_event(self._data_dir, case_id, "reply_received",
                     {"from": email.from_, "attachments": saved,
+                     "body": cleaned[:2000],
                      "body_len": len(email.body or "")})
         if case["stage"] in REWORK_STAGES:
             try:
