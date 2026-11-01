@@ -32,7 +32,14 @@ trap cleanup EXIT
 export PYTHONPATH="$PWD/src"
 echo "[start] launching intake watcher…"
 # -u: unbuffered, so watcher logs appear immediately through the substitution.
-.venv/bin/python -u -m settleready.agents.intake watch --interval 15 \
+# The relay caps inbox polls at 60/hour/IP — 15s polling would 429 within
+# minutes. Use 65s when the relay transport is configured.
+INTERVAL=15
+if grep -q "^SETTLEREADY_EMAIL_SOURCE=relay" .env 2>/dev/null; then
+  INTERVAL=65
+  echo "[start] relay transport detected — polling every 65s (relay limit: 60/hour)"
+fi
+.venv/bin/python -u -m settleready.agents.intake watch --interval $INTERVAL \
   > >(sed 's/^/[watcher] /') 2>&1 &
 WATCHER_PID=$!
 echo "[start] watcher running (pid $WATCHER_PID); starting Streamlit UI… (Ctrl-C stops both)"
