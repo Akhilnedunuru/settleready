@@ -237,7 +237,7 @@ def ai_review_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
     if provider is None:
         # Resolved lazily: veto-only paths never need an API key.
         def _provider():
-            from settleready.tools.provider import get_provider
+            from settleready.llm.provider import get_provider
             return get_provider()
     else:
         def _provider():
