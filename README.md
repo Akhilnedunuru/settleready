@@ -141,7 +141,9 @@ pipeline runs.
 scripts/          one-command setup, seeding, indexing, smoke test
 src/settleready/
   llm/            provider interface (OpenAI live, Ollama stub — swap via config)
-  agents/         intake, extraction, verification, builder  (module 4: LangGraph)
+  agents/         the four 5.1 agents (ingestion, grounding, outreach, reviewer),
+                the 4.1 ToT disposition planner, and graph.py — the LangGraph
+                multi-agent orchestration (with a plain-loop fallback)
   tools/          email client, PDF parser, mock DBs, RAG retriever, ACV calculator
   memory/         Case Blackboard, return tally store
   data/           fixture generator (synthetic PDFs + mock records, seeded)
@@ -162,7 +164,9 @@ data/             generated at runtime (gitignored): fixtures, chroma index, inb
 | 2 · Reasoning / memory / tools | ReAct loop, tool interfaces, Blackboard | `src/settleready/llm/`, `tools/`, `memory/` |
 | 3 · Retrieval / RAG | statute corpus + state-filtered retriever | `src/settleready/tools/rag.py`, `data/` |
 | 4 · Multi-agent | ToT Disposition Planner (LangGraph nodes + graph) + review loop | `src/settleready/agents/disposition.py`, `pipeline.py` |
+| 4.1 · ToT integration | beam-search disposition planner for non-clean cases (generator/critic/controller as LangGraph nodes; Case Blackboard as state manager) | `src/settleready/agents/disposition.py` |
 | 5 · Eval / guardrails | eval harness, PII redaction, audit log, UI | `src/settleready/eval/`, `ui/` |
+| 5.1 · Multi-agent architecture | four agents (ingestion, grounding, outreach, reviewer) on one LangGraph StateGraph: sequential backbone, conditional branches, iterative review loop, blackboard communication | `src/settleready/agents/graph.py`, `src/settleready/agents/reviewer.py` (`ai_review_case`) |
 
 ## Environment variables
 
@@ -171,7 +175,8 @@ set `SETTLEREADY_PROVIDER=ollama` to use a local model once the Ollama provider 
 
 ## Cost
 
-A full pipeline run on GPT-4o-mini costs roughly **$0.02–0.05**. Set a $10/month cap in the
+A full pipeline run on GPT-4o-mini costs roughly **$0.02–0.06** (includes the
+reviewer agent's single first-pass call, which runs only on clean cases). Set a $10/month cap in the
 OpenAI dashboard and you'll never think about it again.
 
 ## Data & privacy

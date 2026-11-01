@@ -439,6 +439,17 @@ def tab_review():
     st.write(f"Case **{case_id}** — stage `{packet['stage']}`, "
              f"returns used: {packet['return_count']}/{MAX_RETURNS}, "
              f"customer follow-ups: {packet['followup_count']}/3")
+    ai = packet.get("ai_review") or {}
+    if ai.get("last_approval"):
+        appr = ai["last_approval"]
+        st.caption("🤖 AI first-pass review: approved"
+                   + (" (degraded — reviewer LLM was unavailable)"
+                      if appr.get("degraded") else "")
+                   + (f" — {appr['note']}" if appr.get("note") else ""))
+    elif ai.get("returns"):
+        last = ai.get("last") or {}
+        st.caption(f"🤖 AI first-pass review: returned {ai['returns']}× "
+                   f"(last: {', '.join(last.get('reason_codes', []))})")
     _show_flash()
     if packet["verification"].get("conflicts"):
         for cf in packet["verification"]["conflicts"]:
@@ -454,7 +465,8 @@ def tab_review():
         return
 
     if st.button("↻ Re-run analyst pipeline (rework)"):
-        with st.spinner("Re-running intake → extract → verify → research → compute…"):
+        with st.spinner("Re-running the multi-agent pipeline "
+                        "(ingest → ground → reviewer)…"):
             try:
                 out = run_case(case_id, data_dir=DATA_DIR)
             except Exception as e:  # noqa: BLE001 — surface it in the UI

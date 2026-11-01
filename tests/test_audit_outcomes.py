@@ -6,12 +6,14 @@ set_audit_details). These tests pin that contract at both levels: the
 blackboard round-trip, and a stubbed end-to-end pipeline run for the clean
 and non-clean branches.
 """
+import json
 import os
 
 import pytest
 
 from settleready.memory.blackboard import CaseBlackboard
 from settleready import pipeline
+from settleready.agents import graph
 
 
 def _bb(tmp_path):
@@ -46,23 +48,32 @@ def _fields():
             "lien_declared": f(False)}
 
 
+class _ApproveProvider:
+    """Reviewer-shaped stub: the extraction/reach stubs below bypass the LLM,
+    but the reviewer agent always makes its own call."""
+    def complete(self, system="", user="", json_mode=False, max_tokens=0,
+                 temperature=0.0):
+        return json.dumps({"decision": "approve", "reason_codes": [],
+                           "note": "stub approval"})
+
+
 def _run(tmp_path, monkeypatch, report):
     dd = str(tmp_path)
     case_id = "TL-2026-1099"
     os.makedirs(os.path.join(dd, "pdfs", case_id))
     open(os.path.join(dd, "pdfs", case_id, "claim_form.pdf"), "wb").close()
-    monkeypatch.setattr(pipeline, "parse_document",
+    monkeypatch.setattr(graph, "parse_document",
                         lambda f: [{"page": 1, "text": "x"}])
-    monkeypatch.setattr(pipeline, "extract_fields",
+    monkeypatch.setattr(graph, "extract_fields",
                         lambda docs, **kw: {"fields": _fields(), "trace": [],
                                             "flags": []})
-    monkeypatch.setattr(pipeline, "verify_case", lambda *a, **k: report)
-    monkeypatch.setattr(pipeline, "research",
+    monkeypatch.setattr(graph, "verify_case", lambda *a, **k: report)
+    monkeypatch.setattr(graph, "research",
                         lambda *a, **k: {"citations": ["GA.md"], "answer": "a",
                                          "chunks": [],
                                          "citation_check": {"passed": True,
                                                             "reason": ""}})
-    monkeypatch.setattr(pipeline, "compute_acv",
+    monkeypatch.setattr(graph, "compute_acv",
                         lambda **k: (22300, {"formula": "f"}))
 
     class _Val:
@@ -72,8 +83,8 @@ def _run(tmp_path, monkeypatch, report):
         def comparables(self, case_id):
             return [{}, {}, {}, {}, {}, {}]
 
-    monkeypatch.setattr(pipeline, "MockValuationService", _Val)
-    return pipeline.run_case(case_id, data_dir=dd)
+    monkeypatch.setattr(graph, "MockValuationService", _Val)
+    return pipeline.run_case(case_id, data_dir=dd, provider=_ApproveProvider())
 
 
 def test_clean_run_audit_rows_carry_outcomes(tmp_path, monkeypatch):
@@ -92,12 +103,12 @@ def test_clean_run_audit_rows_carry_outcomes(tmp_path, monkeypatch):
         "title_state": "GA", "citations": ["GA.md"], "citation_check": "passed"}
     assert rows[("compute", "stage_transition")] == {
         "acv": 22300, "comparables": 6, "mileage": 41000}
-    assert rows[("ready_for_review", "routed")] == {"acv": 22300}
+    assert rows[("ready_for_review", "routed")] == {
+        "acv": 22300, "ai_reviewer": "approved", "degraded": False}
 
 
 def test_nonclean_run_verification_row_carries_conflict(tmp_path, monkeypatch):
-    import settleready.agents.disposition as disp
-    monkeypatch.setattr(disp, "plan_disposition",
+    monkeypatch.setattr(graph, "plan_disposition",
                         lambda *a, **k: {"outcome": "escalate"})
     report = {"passed": False,
               "checks": [{"check": "lien_check", "status": "conflict"}],

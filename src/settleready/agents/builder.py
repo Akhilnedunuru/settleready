@@ -53,6 +53,9 @@ def build_packet(case_id: str, data_dir: str = "data") -> dict:
         "return_count": state.get("return_count", 0),
         "followup_count": state.get("followup_count", 0),
         "last_return": state.get("last_return"),
+        "ai_review": {"returns": state.get("ai_return_count", 0),
+                      "last": state.get("last_ai_return"),
+                      "last_approval": state.get("last_ai_review")},
         "citations": citations,
     }
     bb.close()

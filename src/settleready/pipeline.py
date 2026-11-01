@@ -1,27 +1,21 @@
-"""Pipeline: intake -> extract -> verify -> research -> compute -> blackboard
-(modules 1-4 live here; the human review loop arrives in module 5).
+"""SettleReady pipeline entry point.
 
-Each stage reads and writes the Case Blackboard — the contract between stages.
+The multi-agent orchestration lives in settleready.agents.graph (Checkpoint
+5.1: a LangGraph StateGraph over the ingestion, grounding, outreach, and
+reviewer agents, with the Checkpoint 4.1 ToT disposition planner embedded as
+the non-clean-case branch). This module owns the run shell: the running
+marker the watcher and UI poll, the pipeline lifecycle events, and the
+summary contract the CLI, UI, and tests consume.
+
 Run:  PYTHONPATH=src python -m settleready.pipeline --case-id TL-2026-1043 --data data
 """
 from __future__ import annotations
 
-import glob
 import os
 
-from settleready.agents.extraction import extract_fields
-from settleready.agents.outreach import maybe_send_info_request, needs_from_report
-from settleready.agents.researcher import research
-from settleready.agents.verification import verify_case
+from settleready.agents.graph import run_case_graph
 from settleready.memory.blackboard import CaseBlackboard
 from settleready.memory.events import emit as _emit_event
-from settleready.tools.acv import compute_acv
-from settleready.tools.mock_dbs import MockValuationService
-from settleready.tools.pdf_parser import parse_document
-
-
-def _doc_name(path: str) -> str:
-    return os.path.splitext(os.path.basename(path))[0]  # claim_form.pdf -> claim_form
 
 
 def _running_marker(data_dir: str, case_id: str) -> str:
@@ -41,7 +35,11 @@ def is_running(data_dir: str, case_id: str, stale_after: int = 180) -> bool:
 
 
 def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
-    """Run intake -> extraction -> verification for one case, via the blackboard."""
+    """Run the multi-agent graph for one case, via the blackboard.
+
+    Returns {"case_id", "stages", "trace", "audit", "next"} plus optional
+    "outreach" / "disposition" / "review" details from the graph's final state.
+    """
     import time
     os.makedirs(os.path.join(data_dir, "running"), exist_ok=True)
     with open(_running_marker(data_dir, case_id), "w") as f:
@@ -49,9 +47,23 @@ def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
     _emit_event(data_dir, case_id, "pipeline_started")
     bb = CaseBlackboard(os.path.join(data_dir, "blackboard.db"))
     try:
-        return _run_case_inner(case_id, data_dir, provider, bb)
+        bb.create_case(case_id)
+        final = run_case_graph(case_id, data_dir=data_dir, provider=provider)
+        summary: dict = {
+            "case_id": case_id,
+            "stages": final.get("summaries", []),
+            "trace": final.get("trace", []),
+            "audit": bb.audit_log(case_id),
+            "next": (bb.get_case(case_id) or {}).get("stage", ""),
+        }
+        for summary_key, state_key in (("outreach", "outreach"),
+                                       ("disposition", "plan"),
+                                       ("review", "review")):
+            if final.get(state_key):
+                summary[summary_key] = final[state_key]
+        return summary
     except Exception as e:
-        _emit_event(data_dir, case_id, "pipeline_failed", {"error": str(e)})
+        _emit_event(data_dir, case_id, "pipeline_failed", {"error": str(e)[:300]})
         raise
     finally:
         try:
@@ -60,173 +72,6 @@ def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
             pass
         _emit_event(data_dir, case_id, "pipeline_finished")
         bb.close()
-
-
-def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -> dict:
-    summary: dict = {"case_id": case_id, "stages": []}
-    bb.create_case(case_id)
-
-    # -- intake: parse the case's PDFs -------------------------------------
-    intake_row = bb.set_stage(case_id, "intake")
-    pdf_dir = os.path.join(data_dir, "pdfs", case_id)
-    pdfs = sorted(glob.glob(os.path.join(pdf_dir, "*.pdf")))
-    if not pdfs:
-        raise FileNotFoundError(f"No PDFs for {case_id} in {pdf_dir} — run scripts/seed.sh first.")
-    docs = []
-    for f in pdfs:
-        name = os.path.basename(f)
-        pages = parse_document(f)
-        docs.append({"source": name, "pages": pages})
-        _emit_event(data_dir, case_id, "tool_call",
-                    {"tool": "pdf_parser.parse_document",
-                     "args": {"file": name},
-                     "result": f"{len(pages)} page(s) extracted"})
-    docs_present = [_doc_name(f) for f in pdfs]
-    bb.write(case_id, "docs_present", docs_present)
-    _emit_event(data_dir, case_id, "documents_parsed",
-                {"count": len(docs), "docs": docs_present})
-    bb.set_audit_details(intake_row, {"documents": docs_present})
-    # Customer follow-up statements (text replies) join the extraction corpus
-    # as their own document, so a confirmation in words ("yes, the lien is
-    # with Lone Star") can resolve a conflict without new PDFs.
-    for i, stmt in enumerate(bb.read(case_id, "customer_statements") or []):
-        docs.append({"source": f"customer_reply_{i + 1}.txt", "override": True,
-                     "pages": [{"page": 1, "text": stmt["body"]}]})
-    summary["stages"].append(f"intake: parsed {len(docs)} documents {docs_present}")
-
-    # -- extraction: ReAct loop --------------------------------------------
-    extraction_row = bb.set_stage(case_id, "extraction")
-    extraction = extract_fields(docs, provider=provider, case_id=case_id,
-                                data_dir=data_dir)
-    bb.write(case_id, "fields", extraction["fields"])
-    bb.write(case_id, "extraction_trace", extraction["trace"])
-    bb.write(case_id, "extraction_flags", extraction["flags"])
-    n_ok = sum(1 for v in extraction["fields"].values() if v["confidence"] >= 0.8)
-    bb.set_audit_details(extraction_row, {
-        "fields_at_confidence": n_ok,
-        "fields_total": len(extraction["fields"]),
-        "below_threshold": extraction["flags"]})
-    summary["stages"].append(
-        f"extraction: {n_ok} fields at confidence>=0.8, flags={extraction['flags']}")
-    summary["trace"] = extraction["trace"]  # ReAct Thought->Action->Observation steps
-
-    # -- verification: fan-out ----------------------------------------------
-    verification_row = bb.set_stage(case_id, "verification")
-    report = verify_case(case_id, extraction["fields"], docs_present, data_dir=data_dir)
-    bb.write(case_id, "verification", report)
-    _emit_event(data_dir, case_id, "verification_checks",
-                {"passed": report["passed"],
-                 "checks": [{"check": c["check"], "status": c["status"]}
-                            for c in report["checks"]]})
-    bb.set_audit_details(verification_row, {
-        "passed": report["passed"],
-        "pass": sum(1 for c in report["checks"] if c["status"] == "pass"),
-        "fail": sum(1 for c in report["checks"] if c["status"] == "fail"),
-        "conflict": sum(1 for c in report["checks"] if c["status"] == "conflict"),
-        "conflicts": [c["reason_code"] for c in report["conflicts"]]})
-    summary["stages"].append(
-        f"verification: passed={report['passed']}, "
-        f"conflicts={[c['reason_code'] for c in report['conflicts']]}, flags={report['flags']}")
-
-    # -- routing ---------------------------------------------------------------
-    if not report["passed"]:
-        next_stage = "needs_info"
-        bb.set_stage(case_id, next_stage, event="routed",
-                     details={"passed": False,
-                              "conflicts": [c["reason_code"] for c in report["conflicts"]]})
-        # Disposition Planner (Checkpoint 4.1 ToT): for non-clean cases, a
-        # beam search over email groupings decides what to ask the claimant,
-        # what to flag for analyst rework, or whether to escalate — replacing
-        # the old fixed conflict->ask mapping. Any planner failure falls back
-        # to that mapping, so the planner can never break the pipeline. The
-        # customer's reply re-triggers the pipeline via the intake watcher,
-        # closing the loop.
-        holder = (extraction["fields"].get("holder_name") or {}).get("value", "")
-        try:
-            from settleready.agents.disposition import plan_disposition
-            plan = plan_disposition(case_id, report, data_dir=data_dir,
-                                    provider=provider)
-        except Exception as e:  # noqa: BLE001
-            _emit_event(data_dir, case_id, "disposition_fallback",
-                        {"error": str(e)[:200]})
-            plan = {"outcome": "no_action"}
-        if plan["outcome"] == "email":
-            outreach = maybe_send_info_request(
-                data_dir, case_id, plan["needs"], holder_name=holder or "")
-            summary["outreach"] = outreach
-            if outreach.get("escalated"):
-                next_stage = "escalated"
-        elif plan["outcome"] == "analyst_rework":
-            bb.set_stage(case_id, "analyst_rework", event="disposition",
-                         details={"analyst_flags": [g["id"] for g in
-                                                    plan["analyst_flags"]]})
-            next_stage = "analyst_rework"
-            summary["outreach"] = {"sent": False,
-                                   "reason": "analyst-internal gaps flagged"}
-        elif plan["outcome"] == "escalate":
-            bb.set_stage(case_id, "escalated", event="disposition_escalated",
-                         details={"reason": "disposition planner escalated"})
-            next_stage = "escalated"
-            summary["outreach"] = {"sent": False, "reason": "escalated"}
-        else:  # no_action: previous behaviour (dedupes to "already asked")
-            outreach = maybe_send_info_request(
-                data_dir, case_id, needs_from_report(report), holder_name=holder or "")
-            summary["outreach"] = outreach
-            if outreach.get("escalated"):
-                next_stage = "escalated"
-        summary["disposition"] = plan
-        summary["next"] = next_stage
-        summary["audit"] = bb.audit_log(case_id)
-        return summary
-
-    # -- research: state law for this title state --------------------------------
-    research_row = bb.set_stage(case_id, "research")
-    title_state = (extraction["fields"].get("title_state") or {}).get("value", "")
-    if not title_state:
-        # Fallback: our policy numbers are prefixed with the state (TX-A-...).
-        # An empty title_state would make state-filtered retrieval return
-        # nothing; deriving it keeps legal research working instead of
-        # silently producing an empty section.
-        policy_no = (extraction["fields"].get("policy_number") or {}).get("value", "")
-        prefix = (policy_no.split("-")[0] or "") if policy_no else ""
-        if len(prefix) == 2 and prefix.isalpha():
-            title_state = prefix.upper()
-            _emit_event(data_dir, case_id, "state_fallback",
-                        {"from": "policy_number", "state": title_state})
-    legal = research("What is the total loss threshold and valuation method?",
-                     title_state, data_dir=data_dir, provider=provider,
-                     case_id=case_id)
-    bb.write(case_id, "legal_research", legal)
-    _emit_event(data_dir, case_id, "legal_research",
-                {"citations": legal["citations"]})
-    check = legal.get("citation_check", {})
-    bb.set_audit_details(research_row, {
-        "title_state": title_state, "citations": legal["citations"],
-        "citation_check": ("passed" if check.get("passed")
-                           else f"failed: {check.get('reason', 'no chunks retrieved')}")})
-    summary["stages"].append(
-        f"research: {title_state} threshold answered with citations {legal['citations']}")
-
-    # -- compute: deterministic ACV (money math never via LLM) -------------------
-    compute_row = bb.set_stage(case_id, "compute")
-    fields = extraction["fields"]
-    comps = MockValuationService(data_dir).comparables(case_id)
-    mileage = (fields.get("mileage") or {}).get("value") or 0
-    acv, worksheet = compute_acv(comparables=comps, mileage=mileage)
-    _emit_event(data_dir, case_id, "tool_call",
-                {"tool": "acv.compute_acv",
-                 "args": {"comparables": len(comps), "mileage": mileage},
-                 "result": f"ACV=${acv:,}"})
-    bb.write(case_id, "acv", {"acv": acv, "worksheet": worksheet})
-    bb.set_audit_details(compute_row, {
-        "acv": acv, "comparables": len(comps), "mileage": mileage})
-    summary["stages"].append(f"compute: ACV=${acv:,} ({worksheet['formula']})")
-
-    next_stage = "ready_for_review"
-    bb.set_stage(case_id, next_stage, event="routed", details={"acv": acv})
-    summary["next"] = next_stage
-    summary["audit"] = bb.audit_log(case_id)
-    return summary
 
 
 if __name__ == "__main__":

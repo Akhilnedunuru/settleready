@@ -109,7 +109,7 @@ def get_email_client(data_dir: str = "data") -> "EmailClient":
     """Factory: transport selected by SETTLEREADY_EMAIL_SOURCE.
 
     - "relay": shared demo mailbox via the operator's relay server
-      (tools/relay_server.py) — clones need only RELAY_URL + RELAY_TOKEN;
+      (src/settleready/tools/relay_server.py) — clones need only RELAY_URL + RELAY_TOKEN;
       the Gmail app password never reaches their machines.
     - "gmail": the operator's own mailbox via IMAP/SMTP (credentials in the
       local, gitignored .env).
