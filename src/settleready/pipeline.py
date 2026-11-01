@@ -199,8 +199,11 @@ def _run_case_inner(case_id: str, data_dir: str, provider, bb: CaseBlackboard) -
     bb.write(case_id, "legal_research", legal)
     _emit_event(data_dir, case_id, "legal_research",
                 {"citations": legal["citations"]})
+    check = legal.get("citation_check", {})
     bb.set_audit_details(research_row, {
-        "title_state": title_state, "citations": legal["citations"]})
+        "title_state": title_state, "citations": legal["citations"],
+        "citation_check": ("passed" if check.get("passed")
+                           else f"failed: {check.get('reason', 'no chunks retrieved')}")})
     summary["stages"].append(
         f"research: {title_state} threshold answered with citations {legal['citations']}")
 

@@ -171,6 +171,12 @@ def _render_event(ev: dict) -> None:
                  f"asks: {needs}; analyst flags: {flags}")
     elif e == "disposition_fallback":
         st.write(f"`{ts}` 🗺️ disposition planner failed, fell back: {d.get('error')}")
+    elif e == "citation_check":
+        if d.get("passed"):
+            st.write(f"`{ts}` ✅ citation check passed")
+        else:
+            st.write(f"`{ts}` ❌ citation check FAILED — {d.get('reason')} "
+                     f"(answer declined)")
 
 
 def _render_event_feed(case_id: str, limit: int = 25,

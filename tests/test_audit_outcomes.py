@@ -59,7 +59,9 @@ def _run(tmp_path, monkeypatch, report):
     monkeypatch.setattr(pipeline, "verify_case", lambda *a, **k: report)
     monkeypatch.setattr(pipeline, "research",
                         lambda *a, **k: {"citations": ["GA.md"], "answer": "a",
-                                         "chunks": []})
+                                         "chunks": [],
+                                         "citation_check": {"passed": True,
+                                                            "reason": ""}})
     monkeypatch.setattr(pipeline, "compute_acv",
                         lambda **k: (22300, {"formula": "f"}))
 
@@ -87,7 +89,7 @@ def test_clean_run_audit_rows_carry_outcomes(tmp_path, monkeypatch):
     assert rows[("verification", "stage_transition")] == {
         "passed": True, "pass": 5, "fail": 0, "conflict": 0, "conflicts": []}
     assert rows[("research", "stage_transition")] == {
-        "title_state": "GA", "citations": ["GA.md"]}
+        "title_state": "GA", "citations": ["GA.md"], "citation_check": "passed"}
     assert rows[("compute", "stage_transition")] == {
         "acv": 22300, "comparables": 6, "mileage": 41000}
     assert rows[("ready_for_review", "routed")] == {"acv": 22300}
