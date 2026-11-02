@@ -230,64 +230,76 @@ def live_panel() -> None:
 def _agent_flow_diagram(case_id: str) -> None:
     """Visual multi-agent flow: which nodes ran, in what order, with ToT/fallback.
 
-    Built from the persisted agent_path — visible long after the run finishes.
-    Green/bold = path taken; gray/dashed = not taken.
+    Built from the persisted agent_path — updates live during a run (the Packet
+    tab refreshes every 2s) and persists after. Green/bold = path taken;
+    gray/dashed = not taken.
     """
-    st.markdown("**Agent flow — multi-agent path taken**")
-    bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
-    try:
-        path = bb.read(case_id, "agent_path") or []
-    finally:
-        bb.close()
-    if not path:
-        st.info("No agent run recorded yet — re-run the pipeline to see the flow diagram.")
-        return
+    from settleready.pipeline import is_running
+    live = is_running(DATA_DIR, case_id)
+    with st.container(border=True):
+        title = "**🤖 Agent flow — multi-agent path taken**"
+        if live:
+            title += " 🔴 LIVE"
+        st.markdown(title)
+        bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
+        try:
+            path = bb.read(case_id, "agent_path") or []
+        finally:
+            bb.close()
+        if not path:
+            if live:
+                st.info("Pipeline running — the path will draw here as agents complete…")
+            else:
+                st.info("No agent run recorded yet — re-run the pipeline to see the flow diagram.")
+            return
 
-    # ToT vs fallback: which disposition event fired?
-    evs = events.tail(DATA_DIR, case_id=case_id, limit=200)
-    tot_used = any(e["event"] == "disposition_planned" for e in evs)
-    fb_used = any(e["event"] == "disposition_fallback" for e in evs)
-    disp_label = "Disposition"
-    if "disposition" in path:
-        if tot_used:
-            disp_label = "Disposition\\n🌳 ToT beam search"
-        elif fb_used:
-            disp_label = "Disposition\\n⚙️ Fallback mapping"
+        # ToT vs fallback: most recent disposition event wins (not just any).
+        # ToT only runs for non-clean cases — clean cases skip disposition entirely.
+        evs = events.tail(DATA_DIR, case_id=case_id, limit=200)
+        disp_label = "Disposition"
+        if "disposition" in path:
+            for e in evs:  # newest-first; first match is the latest run
+                if e["event"] == "disposition_planned":
+                    disp_label = "Disposition\\n🌳 ToT beam search"
+                    break
+                if e["event"] == "disposition_fallback":
+                    disp_label = "Disposition\\n⚙️ Fallback mapping"
+                    break
 
-    taken = set(zip(path, path[1:]))
-    if path:
-        taken.add((path[-1], "end"))
+        taken = set(zip(path, path[1:]))
+        if path:
+            taken.add((path[-1], "end"))
 
-    def _edge(a: str, b: str, label: str = "") -> str:
-        lbl = f', label="{label}"' if label else ""
-        if (a, b) in taken:
-            return f'{a} -> {b} [color="#1a7f37", penwidth=2.5{lbl}];'
-        return f'{a} -> {b} [color=gray, style=dashed{lbl}];'
+        def _edge(a: str, b: str, label: str = "") -> str:
+            lbl = f', label="{label}"' if label else ""
+            if (a, b) in taken:
+                return f'{a} -> {b} [color="#1a7f37", penwidth=2.5{lbl}];'
+            return f'{a} -> {b} [color=gray, style=dashed{lbl}];'
 
-    dot = f"""
-    digraph {{
-        rankdir=LR;
-        node [shape=box, style="rounded,filled", fillcolor=white, fontname="sans-serif"];
-        edge [fontname="sans-serif", fontsize=10, fontcolor="#555555"];
-        ingest [label="Ingest\\n(extract)"];
-        ground [label="Ground\\n(verify)"];
-        disposition [label="{disp_label}"];
-        outreach [label="Outreach\\n(email)"];
-        reviewer [label="Reviewer\\n(AI check)"];
-        end [label="END", shape=ellipse, fillcolor="#e6f4ea"];
-        {_edge("ingest", "ground")}
-        {_edge("ground", "reviewer", "passed")}
-        {_edge("ground", "disposition", "failed")}
-        {_edge("disposition", "outreach")}
-        {_edge("disposition", "end", "escalate")}
-        {_edge("outreach", "end")}
-        {_edge("reviewer", "end", "approve")}
-        {_edge("reviewer", "ingest", "return")}
-        {_edge("reviewer", "ground", "return")}
-    }}
-    """
-    st.graphviz_chart(dot)
-    st.caption(f"Path taken: {' → '.join(path)} → end")
+        dot = f"""
+        digraph {{
+            rankdir=LR;
+            node [shape=box, style="rounded,filled", fillcolor=white, fontname="sans-serif"];
+            edge [fontname="sans-serif", fontsize=10, fontcolor="#555555"];
+            ingest [label="Ingest\\n(extract)"];
+            ground [label="Ground\\n(verify)"];
+            disposition [label="{disp_label}"];
+            outreach [label="Outreach\\n(email)"];
+            reviewer [label="Reviewer\\n(AI check)"];
+            end [label="END", shape=ellipse, fillcolor="#e6f4ea"];
+            {_edge("ingest", "ground")}
+            {_edge("ground", "reviewer", "passed")}
+            {_edge("ground", "disposition", "failed")}
+            {_edge("disposition", "outreach")}
+            {_edge("disposition", "end", "escalate")}
+            {_edge("outreach", "end")}
+            {_edge("reviewer", "end", "approve")}
+            {_edge("reviewer", "ingest", "return")}
+            {_edge("reviewer", "ground", "return")}
+        }}
+        """
+        st.graphviz_chart(dot)
+        st.caption(f"Path taken: {' → '.join(path)} → end")
 
 
 def _render_email_message(ev: dict) -> None:
@@ -404,14 +416,15 @@ def tab_packet():
         _agent_flow_diagram(case_id)
     st.divider()
 
-    st.markdown("**Extracted fields**")
-    # str() the values: the column mixes str/int/bool, which pyarrow can't serialize
-    rows = [{"field": f, "value": str(v.get("value")), "confidence": v.get("confidence"),
-             "source": v.get("source", "")}
-            for f, v in packet["fields"].items()]
-    st.dataframe(rows, width="stretch")
-    if packet["extraction_flags"]:
-        st.warning(f"Below confidence threshold: {packet['extraction_flags']}")
+    with st.container(border=True):
+        st.markdown("**📋 Extracted fields**")
+        # str() the values: the column mixes str/int/bool, which pyarrow can't serialize
+        rows = [{"field": f, "value": str(v.get("value")), "confidence": v.get("confidence"),
+                 "source": v.get("source", "")}
+                for f, v in packet["fields"].items()]
+        st.dataframe(rows, width="stretch")
+        if packet["extraction_flags"]:
+            st.warning(f"Below confidence threshold: {packet['extraction_flags']}")
 
     with st.expander("ReAct trace (Thought → Action → Observation)"):
         trace = packet.get("trace", [])
@@ -423,29 +436,31 @@ def tab_packet():
             st.markdown(f"**Observation:** {t['observation']}")
             st.divider()
 
-    st.markdown("**Verification**")
-    for c in packet["verification"].get("checks", []):
-        st.write(f"`{c['status']:8s}` {c['check']}: {c['detail']}")
-    conflicts = packet["verification"].get("conflicts", [])
-    if conflicts:
-        st.markdown("**Conflicts — analyst verification required**")
-        st.caption("Both values are preserved with their sources. The registry "
-                   "value is used in the packet, but an unresolved conflict is "
-                   "never treated as verified information.")
-        for cf in conflicts:
-            st.error(f"CONFLICT {cf['reason_code']}: {cf['detail']}")
-            if cf.get("submitted"):
-                st.write(f"- Submitted: **{cf['submitted']['value']}** "
-                         f"_(source: {cf['submitted']['source']})_")
-                st.write(f"- Authoritative: **{cf['authoritative']['value']}** "
-                         f"_(source: {cf['authoritative']['source']})_")
-                st.write(f"- Resolution: {cf['resolution']} "
-                         f"(status: `{cf['status']}`)")
+    with st.container(border=True):
+        st.markdown("**✅ Verification**")
+        for c in packet["verification"].get("checks", []):
+            st.write(f"`{c['status']:8s}` {c['check']}: {c['detail']}")
+        conflicts = packet["verification"].get("conflicts", [])
+        if conflicts:
+            st.markdown("**Conflicts — analyst verification required**")
+            st.caption("Both values are preserved with their sources. The registry "
+                       "value is used in the packet, but an unresolved conflict is "
+                       "never treated as verified information.")
+            for cf in conflicts:
+                st.error(f"CONFLICT {cf['reason_code']}: {cf['detail']}")
+                if cf.get("submitted"):
+                    st.write(f"- Submitted: **{cf['submitted']['value']}** "
+                             f"_(source: {cf['submitted']['source']})_")
+                    st.write(f"- Authoritative: **{cf['authoritative']['value']}** "
+                             f"_(source: {cf['authoritative']['source']})_")
+                    st.write(f"- Resolution: {cf['resolution']} "
+                             f"(status: `{cf['status']}`)")
 
-    st.markdown("**Legal research**")
-    st.write(packet["legal"]["answer"] or "_not run_")
-    if packet["legal"]["citations"]:
-        st.caption("citations: " + ", ".join(packet["legal"]["citations"]))
+    with st.container(border=True):
+        st.markdown("**📚 Legal research**")
+        st.write(packet["legal"]["answer"] or "_not run_")
+        if packet["legal"]["citations"]:
+            st.caption("citations: " + ", ".join(packet["legal"]["citations"]))
     chunks = packet["legal"].get("chunks", [])
     with st.expander(f"Retrieved chunks for this case ({len(chunks)})"):
         if not chunks:
@@ -466,27 +481,29 @@ def tab_packet():
         except Exception as e:  # noqa: BLE001 — surface it in the UI
             st.warning(f"Could not read the index: {e}")
 
-    st.markdown("**ACV worksheet**")
-    acv = packet["acv"]
-    if acv:
-        st.metric("Actual cash value", f"${acv['acv']:,}")
-        for s in acv["worksheet"]["steps"]:
-            st.write(f"`{s['amount']:+7d}` {s['name']} — {s['detail']}")
-    else:
-        st.write("_not computed_")
+    with st.container(border=True):
+        st.markdown("**💰 ACV worksheet**")
+        acv = packet["acv"]
+        if acv:
+            st.metric("Actual cash value", f"${acv['acv']:,}")
+            for s in acv["worksheet"]["steps"]:
+                st.write(f"`{s['amount']:+7d}` {s['name']} — {s['detail']}")
+        else:
+            st.write("_not computed_")
 
-    st.markdown("**Customer outreach**")
-    sent = [ev for ev in events.tail(DATA_DIR, case_id=packet["case_id"], limit=200)
-            if ev["event"] == "email_sent"]
-    if not sent:
-        st.write("_no info-request emails sent yet_")
-    for ev in sent:
-        d = ev["detail"]
-        with st.expander(f"📤 {ev['ts']} → {d.get('to')}", expanded=False):
-            st.write(f"**Subject:** {d.get('subject')}")
-            for n in d.get("needs", []):
-                st.write(f"- {n}")
-            st.caption("The customer's reply (same subject) re-triggers the pipeline via the watcher.")
+    with st.container(border=True):
+        st.markdown("**📤 Customer outreach**")
+        sent = [ev for ev in events.tail(DATA_DIR, case_id=packet["case_id"], limit=200)
+                if ev["event"] == "email_sent"]
+        if not sent:
+            st.write("_no info-request emails sent yet_")
+        for ev in sent:
+            d = ev["detail"]
+            with st.expander(f"📤 {ev['ts']} → {d.get('to')}", expanded=False):
+                st.write(f"**Subject:** {d.get('subject')}")
+                for n in d.get("needs", []):
+                    st.write(f"- {n}")
+                st.caption("The customer's reply (same subject) re-triggers the pipeline via the watcher.")
 
 
 @st.fragment(run_every=2)
