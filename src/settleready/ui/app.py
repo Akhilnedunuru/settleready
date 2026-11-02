@@ -92,13 +92,11 @@ def _show_flash() -> None:
         getattr(st, kind)(msg)
 
 
-@st.fragment(run_every=2)
 def case_picker() -> None:
-    """Global case picker, always visible above the tabs.
+    """Case picker, shown at the top of the Packet/Review/Audit tabs.
 
-    Event-driven: re-queries the case registry every 2s (one cheap SQLite
-    read), so cases the watcher creates appear here ~instantly.
-    """
+    (Not on the Emails tab — that tab groups all cases' threads already.)
+    Called inside those tabs' fragments, so it refreshes with them."""
     ids = _case_ids()
     if not ids:
         st.info("📭 No cases yet — the intake watcher creates one automatically "
@@ -400,6 +398,7 @@ def tab_emails():
 
 @st.fragment(run_every=2)
 def tab_packet():
+    case_picker()
     st.header("Case packet")
     case_id = _need_case()
     if case_id is None:
@@ -517,6 +516,7 @@ def tab_packet():
 
 @st.fragment(run_every=2)
 def tab_review():
+    case_picker()
     st.header("Senior analyst review")
     st.caption("Follows the event log — a finished pipeline or a new return "
                "updates this tab within ~2s.")
@@ -607,6 +607,7 @@ def tab_review():
 
 @st.fragment(run_every=2)
 def tab_audit():
+    case_picker()
     st.header("Audit trail")
     case_id = _need_case()
     if case_id is None:
@@ -644,8 +645,6 @@ def main() -> None:
     if not os.path.exists(os.path.join(DATA_DIR, "statutes")):
         st.error("No environment found — run bash scripts/fresh.sh (or bash scripts/seed.sh) first.")
         return
-
-    case_picker()  # global, always visible above the tabs, auto-refreshes
 
     tabs = st.tabs(["Emails", "Packet", "Review", "Audit trail"])
     with tabs[0]:
