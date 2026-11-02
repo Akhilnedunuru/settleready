@@ -404,17 +404,22 @@ def tab_packet():
     case_id = _need_case()
     if case_id is None:
         return
-    live_panel()
     try:
         packet = build_packet(case_id, data_dir=DATA_DIR)
     except ValueError as e:
         st.warning(str(e))
         return
-    col_main, col_flow = st.columns([1.6, 1])
-    with col_main:
-        st.subheader(f"{packet['case_id']} — stage: `{packet['stage']}` "
-                     f"(returns: {packet['return_count']}/{MAX_RETURNS}, "
-                     f"customer follow-ups: {packet['followup_count']}/3)")
+    # Top row: collapsible run activity (left) + agent flow graph (right)
+    col_activity, col_flow = st.columns([1.4, 1])
+    with col_activity:
+        if is_running(DATA_DIR, case_id):
+            with st.status(f"Processing {case_id} — stage: {packet['stage']}",
+                           state="running", expanded=True):
+                st.caption("Live agent activity — streaming as it happens.")
+                _render_event_feed(case_id, limit=15)
+        with st.expander("📊 Run activity — how this case flowed", expanded=False):
+            st.caption(f"Stage `{packet['stage']}` · full run history, oldest first.")
+            _render_event_feed(case_id, limit=50, oldest_first=True)
     with col_flow:
         with st.container(border=True):
             _agent_flow_diagram(case_id)
