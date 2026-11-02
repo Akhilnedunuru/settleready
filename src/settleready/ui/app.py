@@ -390,16 +390,19 @@ def tab_packet():
     if case_id is None:
         return
     live_panel()
-    _agent_flow_diagram(case_id)
-    st.divider()
     try:
         packet = build_packet(case_id, data_dir=DATA_DIR)
     except ValueError as e:
         st.warning(str(e))
         return
-    st.subheader(f"{packet['case_id']} — stage: `{packet['stage']}` "
-                 f"(returns: {packet['return_count']}/{MAX_RETURNS}, "
-                 f"customer follow-ups: {packet['followup_count']}/3)")
+    col_main, col_flow = st.columns([1.6, 1])
+    with col_main:
+        st.subheader(f"{packet['case_id']} — stage: `{packet['stage']}` "
+                     f"(returns: {packet['return_count']}/{MAX_RETURNS}, "
+                     f"customer follow-ups: {packet['followup_count']}/3)")
+    with col_flow:
+        _agent_flow_diagram(case_id)
+    st.divider()
 
     st.markdown("**Extracted fields**")
     # str() the values: the column mixes str/int/bool, which pyarrow can't serialize

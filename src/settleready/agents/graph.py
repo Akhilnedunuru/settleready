@@ -53,7 +53,6 @@ class CaseState(TypedDict, total=False):
     data_dir: str
     summaries: list      # human-readable stage summaries (run_case "stages")
     trace: list          # ReAct Thought->Action->Observation steps
-    node_path: list      # agent nodes visited in order (for the flow diagram)
     grounding_passed: bool
     report: dict         # verification report (for the disposition node)
     plan: dict           # disposition plan
@@ -350,7 +349,17 @@ def _run_graph(state: dict, ctx: dict) -> dict:
 
     def _wrap(fn, _name):
         def _node(s: dict) -> dict:
-            s.setdefault("node_path", []).append(_name)
+            # Record the visit durably for the flow diagram — written straight
+            # to the blackboard (not via state) so it survives regardless of
+            # how LangGraph merges node updates.
+            try:
+                bb = CaseBlackboard(os.path.join(s["data_dir"], "blackboard.db"))
+                path = bb.read(s["case_id"], "agent_path") or []
+                path.append(_name)
+                bb.write(s["case_id"], "agent_path", path)
+                bb.close()
+            except Exception:
+                pass
             return fn(s, ctx)
         return _node
 
@@ -385,7 +394,14 @@ def _run_fallback(state: dict, ctx: dict) -> dict:
         if visits > 10:
             raise RuntimeError(
                 "agent graph exceeded 10 node visits — possible routing loop")
-        state.setdefault("node_path", []).append(current)
+        try:
+            bb = CaseBlackboard(os.path.join(state["data_dir"], "blackboard.db"))
+            path = bb.read(state["case_id"], "agent_path") or []
+            path.append(current)
+            bb.write(state["case_id"], "agent_path", path)
+            bb.close()
+        except Exception:
+            pass
         state.update(_NODES[current](state, ctx))
         if current in _ROUTERS:
             current = _ROUTERS[current](state)
@@ -402,16 +418,15 @@ def run_case_graph(case_id: str, data_dir: str = "data", provider=None) -> dict:
     """
     ctx = {"provider": provider}
     state: dict = {"case_id": case_id, "data_dir": data_dir}
-    try:
-        import langgraph  # noqa: F401
-        final = _run_graph(state, ctx)
-    except ImportError:
-        final = _run_fallback(state, ctx)
-    # Persist the agent path for the flow diagram (survives after the run).
+    # Clear any stale path from a previous run — the nodes record fresh visits.
     try:
         bb = CaseBlackboard(os.path.join(data_dir, "blackboard.db"))
-        bb.write(case_id, "agent_path", final.get("node_path", []))
+        bb.write(case_id, "agent_path", [])
         bb.close()
     except Exception:
         pass
-    return final
+    try:
+        import langgraph  # noqa: F401
+        return _run_graph(state, ctx)
+    except ImportError:
+        return _run_fallback(state, ctx)
