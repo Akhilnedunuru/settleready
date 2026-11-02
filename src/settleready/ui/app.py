@@ -519,15 +519,8 @@ def tab_review():
         for cf in packet["verification"]["conflicts"]:
             st.error(f"{cf['reason_code']}: {cf['detail']}")
 
-    # Terminal states: nothing left to decide here.
-    if packet["stage"] == "approved":
-        st.success("✅ Approved — the case is complete. No further action needed.")
-        return
-    if packet["stage"] == "escalated":
-        st.error("⬆️ Escalated to a human — the return budget is exhausted. "
-                 "No further action in the UI.")
-        return
-
+    # Always available — re-running a finished case is how you refresh the
+    # agent-flow diagram and verify the pipeline after a code change.
     if st.button("↻ Re-run analyst pipeline (rework)"):
         with st.spinner("Re-running the multi-agent pipeline "
                         "(ingest → ground → reviewer)…"):
@@ -540,8 +533,17 @@ def tab_review():
         _flash("success", f"Routed → **{out['next']}**")
         st.rerun()
     st.caption("Re-run re-executes the full pipeline on the current documents — use it "
-               "after the customer sends missing files. It does not reset the return "
-               "count or change a review decision.")
+               "after the customer sends missing files, or to refresh the agent-flow "
+               "diagram. It does not reset the return count or change a review decision.")
+
+    # Terminal states: nothing left to decide here.
+    if packet["stage"] == "approved":
+        st.success("✅ Approved — the case is complete. No further action needed.")
+        return
+    if packet["stage"] == "escalated":
+        st.error("⬆️ Escalated to a human — the return budget is exhausted. "
+                 "No further action in the UI.")
+        return
 
     note = st.text_input("Reviewer note", "")
     col1, col2 = st.columns(2)
