@@ -53,6 +53,7 @@ class CaseState(TypedDict, total=False):
     data_dir: str
     summaries: list      # human-readable stage summaries (run_case "stages")
     trace: list          # ReAct Thought->Action->Observation steps
+    node_path: list      # agent nodes visited in order (for the flow diagram)
     grounding_passed: bool
     report: dict         # verification report (for the disposition node)
     plan: dict           # disposition plan
@@ -347,14 +348,15 @@ def _run_graph(state: dict, ctx: dict) -> dict:
     """LangGraph runner: the four agents as a StateGraph."""
     from langgraph.graph import END, START, StateGraph
 
-    def _wrap(fn):
+    def _wrap(fn, _name):
         def _node(s: dict) -> dict:
+            s.setdefault("node_path", []).append(_name)
             return fn(s, ctx)
         return _node
 
     graph = StateGraph(CaseState)
-    for name, fn in _NODES.items():
-        graph.add_node(name, _wrap(fn))
+    for _name, fn in _NODES.items():
+        graph.add_node(_name, _wrap(fn, _name))
     graph.add_edge(START, "ingest")
     for src, dst in _FIXED.items():
         graph.add_edge(src, END if dst == "end" else dst)
@@ -383,6 +385,7 @@ def _run_fallback(state: dict, ctx: dict) -> dict:
         if visits > 10:
             raise RuntimeError(
                 "agent graph exceeded 10 node visits — possible routing loop")
+        state.setdefault("node_path", []).append(current)
         state.update(_NODES[current](state, ctx))
         if current in _ROUTERS:
             current = _ROUTERS[current](state)
@@ -401,6 +404,14 @@ def run_case_graph(case_id: str, data_dir: str = "data", provider=None) -> dict:
     state: dict = {"case_id": case_id, "data_dir": data_dir}
     try:
         import langgraph  # noqa: F401
-        return _run_graph(state, ctx)
+        final = _run_graph(state, ctx)
     except ImportError:
-        return _run_fallback(state, ctx)
+        final = _run_fallback(state, ctx)
+    # Persist the agent path for the flow diagram (survives after the run).
+    try:
+        bb = CaseBlackboard(os.path.join(data_dir, "blackboard.db"))
+        bb.write(case_id, "agent_path", final.get("node_path", []))
+        bb.close()
+    except Exception:
+        pass
+    return final

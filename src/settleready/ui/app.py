@@ -227,6 +227,69 @@ def live_panel() -> None:
         _render_event_feed(case_id, limit=50, oldest_first=True)
 
 
+def _agent_flow_diagram(case_id: str) -> None:
+    """Visual multi-agent flow: which nodes ran, in what order, with ToT/fallback.
+
+    Built from the persisted agent_path — visible long after the run finishes.
+    Green/bold = path taken; gray/dashed = not taken.
+    """
+    st.markdown("**Agent flow — multi-agent path taken**")
+    bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
+    try:
+        path = bb.read(case_id, "agent_path") or []
+    finally:
+        bb.close()
+    if not path:
+        st.info("No agent run recorded yet — re-run the pipeline to see the flow diagram.")
+        return
+
+    # ToT vs fallback: which disposition event fired?
+    evs = events.tail(DATA_DIR, case_id=case_id, limit=200)
+    tot_used = any(e["event"] == "disposition_planned" for e in evs)
+    fb_used = any(e["event"] == "disposition_fallback" for e in evs)
+    disp_label = "Disposition"
+    if "disposition" in path:
+        if tot_used:
+            disp_label = "Disposition\\n🌳 ToT beam search"
+        elif fb_used:
+            disp_label = "Disposition\\n⚙️ Fallback mapping"
+
+    taken = set(zip(path, path[1:]))
+    if path:
+        taken.add((path[-1], "end"))
+
+    def _edge(a: str, b: str, label: str = "") -> str:
+        lbl = f', label="{label}"' if label else ""
+        if (a, b) in taken:
+            return f'{a} -> {b} [color="#1a7f37", penwidth=2.5{lbl}];'
+        return f'{a} -> {b} [color=gray, style=dashed{lbl}];'
+
+    dot = f"""
+    digraph {{
+        rankdir=LR;
+        node [shape=box, style="rounded,filled", fillcolor=white, fontname="sans-serif"];
+        edge [fontname="sans-serif", fontsize=10, fontcolor="#555555"];
+        ingest [label="Ingest\\n(extract)"];
+        ground [label="Ground\\n(verify)"];
+        disposition [label="{disp_label}"];
+        outreach [label="Outreach\\n(email)"];
+        reviewer [label="Reviewer\\n(AI check)"];
+        end [label="END", shape=ellipse, fillcolor="#e6f4ea"];
+        {_edge("ingest", "ground")}
+        {_edge("ground", "reviewer", "passed")}
+        {_edge("ground", "disposition", "failed")}
+        {_edge("disposition", "outreach")}
+        {_edge("disposition", "end", "escalate")}
+        {_edge("outreach", "end")}
+        {_edge("reviewer", "end", "approve")}
+        {_edge("reviewer", "ingest", "return")}
+        {_edge("reviewer", "ground", "return")}
+    }}
+    """
+    st.graphviz_chart(dot)
+    st.caption(f"Path taken: {' → '.join(path)} → end")
+
+
 def _render_email_message(ev: dict) -> None:
     """One email row inside a case's thread (called within the case expander)."""
     d = ev.get("detail") or {}
@@ -327,6 +390,7 @@ def tab_packet():
     if case_id is None:
         return
     live_panel()
+    _agent_flow_diagram(case_id)
     st.divider()
     try:
         packet = build_packet(case_id, data_dir=DATA_DIR)
