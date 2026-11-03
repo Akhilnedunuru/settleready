@@ -202,18 +202,10 @@ def node_ground(state: dict, ctx: dict) -> dict:
                     {"citations": legal["citations"]})
         # Note: citation grounding is already verified by verify_citations
         # (3.1 feedback) inside research(); no duplicate guardrail needed here.
-        # Module 6 guardrail: LLM must not emit dollar amounts (money math
-        # is deterministic).
-        from settleready.guardrails.output import screen_output as _screen
-        _tid2 = ctx.get("tracer").trace_id if ctx.get("tracer") else None
-        for v in _screen("llm_text", {"text": legal.get("answer", ""),
-                                      "context": "legal_synthesis"}):
-            _emit_event(data_dir, case_id, "guardrail",
-                        {"layer": "output", "name": v.name,
-                         "action": v.action, "detail": v.detail,
-                         "trace_id": _tid2})
-            if v.action == "block":
-                raise RuntimeError(f"Guardrail BLOCK: {v.name}: {v.detail}")
+        # Note: no_llm_money guardrail NOT applied to legal synthesis — the
+        # LLM may mention dollar amounts when explaining statutes (e.g.
+        # thresholds); the ACV money math is already deterministic and the
+        # legal answer is never used as a monetary value.
         check = legal.get("citation_check", {})
         bb.set_audit_details(research_row, {
             "title_state": title_state, "citations": legal["citations"],
