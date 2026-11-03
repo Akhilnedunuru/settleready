@@ -526,10 +526,16 @@ def plan_disposition(case_id: str, report: dict, data_dir: str = "data",
         return result
 
     if not remaining and not analyst_gaps:
+        _emit_event(data_dir, case_id, "tot_diagnostics",
+                    {"reasons": ["skipped:no_remaining_gaps"]})
         return _finish("no_action", [])
     if not remaining:
+        _emit_event(data_dir, case_id, "tot_diagnostics",
+                    {"reasons": ["skipped:no_remaining_gaps_analyst_only"]})
         return _finish("analyst_rework", [])
     if followups >= MAX_FOLLOWUPS:
+        _emit_event(data_dir, case_id, "tot_diagnostics",
+                    {"reasons": [f"skipped:budget_exhausted:{followups}"]})
         return _finish("escalate", [])
 
     ctx = {"gaps": remaining, "provider": provider,
