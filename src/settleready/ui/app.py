@@ -668,11 +668,11 @@ def tab_observability():
                         traces.append(r)
         except FileNotFoundError:
             pass
+        latest_tid = traces[-1].get("trace_id") if traces else None
         if not traces:
             st.info("No traces yet — run the pipeline to generate spans.")
         else:
             # Latest trace_id only (one run)
-            latest_tid = traces[-1].get("trace_id")
             spans = [t for t in traces if t.get("trace_id") == latest_tid]
             st.caption(f"Trace `{latest_tid}` — {len(spans)} spans")
             st.dataframe([{
@@ -698,11 +698,17 @@ def tab_observability():
     # -- Guardrails --------------------------------------------------------
     with st.container(border=True):
         st.markdown("**🛡️ Guardrails — blocks and flags**")
+        # Latest run only: filter by the latest trace_id (if any).
+        # Old events (no trace_id) are hidden once a traced run exists.
         guard_evs = [e for e in events.tail(DATA_DIR, case_id=case_id, limit=500)
-                     if e.get("event") == "guardrail"]
+                     if e.get("event") == "guardrail"
+                     and (latest_tid is None or
+                          e.get("detail", {}).get("trace_id") == latest_tid)]
         if not guard_evs:
             st.info("No guardrail decisions recorded for this case.")
         else:
+            if latest_tid:
+                st.caption(f"Run `{latest_tid}`")
             for e in guard_evs:
                 d = e.get("detail", {})
                 action = d.get("action", "?")
@@ -716,8 +722,11 @@ def tab_observability():
         from settleready.obs.logging import read_logs
         level = st.selectbox("Level", ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"],
                              key="obs_log_level")
-        logs = read_logs(DATA_DIR, case_id=case_id,
+        # Latest run only: filter by trace_id.
+        logs = read_logs(DATA_DIR, case_id=case_id, trace_id=latest_tid,
                          level=None if level == "ALL" else level, limit=100)
+        if latest_tid:
+            st.caption(f"Run `{latest_tid}`")
         if not logs:
             st.info("No logs for this case yet.")
         else:

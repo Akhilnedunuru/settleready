@@ -123,10 +123,12 @@ def node_ingest(state: dict, ctx: dict) -> dict:
         # BLOCK (schema violation) -> escalate; FLAG (low confidence) -> logged,
         # pipeline already routes these to needs_info.
         from settleready.guardrails.output import screen_output
+        _tid = ctx.get("tracer").trace_id if ctx.get("tracer") else None
         for v in screen_output("extraction", {"fields": extraction["fields"]}):
             _emit_event(data_dir, case_id, "guardrail",
                         {"layer": "output", "name": v.name,
-                         "action": v.action, "detail": v.detail})
+                         "action": v.action, "detail": v.detail,
+                         "trace_id": _tid})
             if v.action == "block":
                 raise RuntimeError(f"Guardrail BLOCK: {v.name}: {v.detail}")
         bb.write(case_id, "fields", extraction["fields"])
@@ -203,11 +205,13 @@ def node_ground(state: dict, ctx: dict) -> dict:
         # Module 6 guardrail: LLM must not emit dollar amounts (money math
         # is deterministic).
         from settleready.guardrails.output import screen_output as _screen
+        _tid2 = ctx.get("tracer").trace_id if ctx.get("tracer") else None
         for v in _screen("llm_text", {"text": legal.get("answer", ""),
                                       "context": "legal_synthesis"}):
             _emit_event(data_dir, case_id, "guardrail",
                         {"layer": "output", "name": v.name,
-                         "action": v.action, "detail": v.detail})
+                         "action": v.action, "detail": v.detail,
+                         "trace_id": _tid2})
             if v.action == "block":
                 raise RuntimeError(f"Guardrail BLOCK: {v.name}: {v.detail}")
         check = legal.get("citation_check", {})
