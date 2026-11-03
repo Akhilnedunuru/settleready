@@ -173,6 +173,9 @@ def _render_event(ev: dict) -> None:
                  f"asks: {needs}; analyst flags: {flags}")
     elif e == "disposition_fallback":
         st.write(f"`{ts}` 🗺️ disposition planner failed, fell back: {d.get('error')}")
+    elif e == "tot_diagnostics":
+        reasons = "; ".join(d.get("reasons", []))
+        st.write(f"`{ts}` 🌳 ToT diagnostics: {reasons}")
     elif e == "citation_check":
         if d.get("passed"):
             st.write(f"`{ts}` ✅ citation check passed")
