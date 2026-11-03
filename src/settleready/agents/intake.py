@@ -242,6 +242,26 @@ class IntakeWatcher:
         # Store only the customer's new words, not the quoted thread below
         # them (see _strip_quoted).
         cleaned = _strip_quoted(email.body or "")
+        # Module 6 guardrail: screen customer text before the agent acts on it.
+        # BLOCK (prompt injection) -> do not store, do not re-run; escalate.
+        # FLAG (PII) -> store but log; the agent must not echo PII.
+        if cleaned:
+            from settleready.guardrails import screen_input
+            verdicts = screen_input(cleaned, source="customer_reply")
+            for v in verdicts:
+                _emit_event(self._data_dir, case_id, "guardrail",
+                            {"layer": "input", "name": v.name,
+                             "action": v.action, "detail": v.detail})
+            blocked = [v for v in verdicts if v.action == "block"]
+            if blocked:
+                bb.log(case_id, case["stage"], "guardrail_block",
+                       {"reason": blocked[0].detail,
+                        "from": email.from_})
+                _emit_event(self._data_dir, case_id, "escalated",
+                            {"reason": "guardrail_block",
+                             "detail": blocked[0].detail})
+                return {"email": email.id, "action": "reply_blocked",
+                        "detail": blocked[0].detail}
         if cleaned:
             stmts = bb.read(case_id, "customer_statements") or []
             stmts.append({"from": email.from_, "body": cleaned[:2000]})

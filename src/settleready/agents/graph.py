@@ -119,6 +119,16 @@ def node_ingest(state: dict, ctx: dict) -> dict:
         extraction_row = bb.set_stage(case_id, "extraction")
         extraction = extract_fields(docs, provider=provider, case_id=case_id,
                                     data_dir=data_dir)
+        # Module 6 guardrail: validate extraction output before storing.
+        # BLOCK (schema violation) -> escalate; FLAG (low confidence) -> logged,
+        # pipeline already routes these to needs_info.
+        from settleready.guardrails.output import screen_output
+        for v in screen_output("extraction", {"fields": extraction["fields"]}):
+            _emit_event(data_dir, case_id, "guardrail",
+                        {"layer": "output", "name": v.name,
+                         "action": v.action, "detail": v.detail})
+            if v.action == "block":
+                raise RuntimeError(f"Guardrail BLOCK: {v.name}: {v.detail}")
         bb.write(case_id, "fields", extraction["fields"])
         bb.write(case_id, "extraction_trace", extraction["trace"])
         bb.write(case_id, "extraction_flags", extraction["flags"])
