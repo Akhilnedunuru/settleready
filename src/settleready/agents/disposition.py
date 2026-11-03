@@ -225,9 +225,18 @@ _CRITIC_SYSTEM = (
     "every gap comes from the verification report.")
 
 
-def _llm_candidates(provider, gaps: list[dict], followups: int) -> list[dict]:
-    """Generator node output, validated; [] on any failure."""
+def _llm_candidates(provider, gaps: list[dict], followups: int,
+                    diag: list | None = None) -> list[dict]:
+    """Generator node output, validated; [] on any failure.
+
+    diag: optional list; appends a string explaining the outcome
+    ("llm_ok", "no_provider", "llm_error:...", "bad_json", "no_valid").
+    """
+    def _note(msg: str):
+        if diag is not None:
+            diag.append(f"generator:{msg}")
     if provider is None:
+        _note("no_provider")
         return []
     try:
         gaps_json = json.dumps(
@@ -244,20 +253,29 @@ def _llm_candidates(provider, gaps: list[dict], followups: int) -> list[dict]:
             if subset and subset not in [c["subset"] for c in cands]:
                 cands.append({"subset": subset,
                               "rationale": a.get("rationale", "")})
-        return cands[:BEAM_WIDTH]
-    except Exception:  # noqa: BLE001
+        result = cands[:BEAM_WIDTH]
+        _note("llm_ok" if result else "no_valid")
+        return result
+    except Exception as e:  # noqa: BLE001
+        _note(f"llm_error:{type(e).__name__}:{str(e)[:100]}")
         return []
 
 
 def _llm_score(provider, subset: list[str],
-               remaining: list[str]) -> dict | None:
+               remaining: list[str], diag: list | None = None) -> dict | None:
     """Critic node output, clamped; None on any failure.
 
     All four rubric keys must be present: a JSON reply in some other shape
     (e.g. a provider returning an unrelated payload) is a failed scoring,
     NOT a zero score — silently zeroing would prune good plans.
+
+    diag: optional list; appends "critic:..." reason strings.
     """
+    def _note(msg: str):
+        if diag is not None:
+            diag.append(f"critic:{msg}")
     if provider is None:
+        _note("no_provider")
         return None
     try:
         user = (f"Candidate email covers gaps: {json.dumps(subset)}\n"
@@ -266,12 +284,15 @@ def _llm_score(provider, subset: list[str],
         out = json.loads(provider.complete(system=_CRITIC_SYSTEM, user=user,
                                            temperature=0, json_mode=True))
         if not isinstance(out, dict):
+            _note("bad_json:not_dict")
             return None
         if not all(k in out for k in ("coverage", "budget", "actor",
                                       "grounding")):
+            _note("bad_json:missing_keys")
             return None
         return _clamp_score(out)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _note(f"llm_error:{type(e).__name__}:{str(e)[:100]}")
         return None
 
 
@@ -297,8 +318,12 @@ def node_generate(state: dict, ctx: dict) -> dict:
         if not plan["remaining"]:
             continue
         remaining_gaps = [g for g in ctx["gaps"] if g["id"] in plan["remaining"]]
+        diag = ctx.get("tot_diag")
+        if diag is None:
+            diag = []
+            ctx["tot_diag"] = diag
         llm = _llm_candidates(ctx["provider"], remaining_gaps,
-                              plan["followups"])
+                              plan["followups"], diag=diag)
         # LLM proposals first, deterministic ones filling up to the cap;
         # duplicates (e.g. "all" == "first two" for a 2-gap case) collapse.
         cands, seen_subsets = [], set()
@@ -326,8 +351,9 @@ def node_score(state: dict, ctx: dict) -> dict:
     extended: list[dict] = []
     for cand in state.get("candidates", []):
         plan = cand["plan"]
+        diag = ctx.get("tot_diag")
         scored = _llm_score(ctx["provider"], cand["subset"],
-                            plan["remaining"])
+                            plan["remaining"], diag=diag)
         if scored is None:
             scored = heuristic_score(cand["subset"], plan["remaining"])
         new_plan = {
@@ -506,7 +532,9 @@ def plan_disposition(case_id: str, report: dict, data_dir: str = "data",
     if followups >= MAX_FOLLOWUPS:
         return _finish("escalate", [])
 
-    ctx = {"gaps": remaining, "provider": provider}
+    ctx = {"gaps": remaining, "provider": provider,
+           "case_id": case_id, "data_dir": data_dir,
+           "tot_diag": []}  # collects generator/critic fallback reasons
     state = _initial_state(remaining, analyst_gaps, followups)
     try:
         final = _run_graph(state, ctx)
@@ -515,6 +543,10 @@ def plan_disposition(case_id: str, report: dict, data_dir: str = "data",
         # logic, so the result is identical for deterministic inputs.
         final = _run_loop(_initial_state(remaining, analyst_gaps, followups),
                           ctx)
+    # Surface ToT diagnostics: did the LLM generator/critic run, or fall back?
+    if ctx.get("tot_diag"):
+        _emit_event(data_dir, case_id, "tot_diagnostics",
+                    {"reasons": ctx["tot_diag"]})
     if final.get("outcome") == "email" and final.get("selected"):
         first_email = final["selected"]["emails"][0]
         needs = [by_id[gid]["ask_text"] for gid in first_email

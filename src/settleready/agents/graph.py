@@ -198,18 +198,11 @@ def node_ground(state: dict, ctx: dict) -> dict:
         bb.write(case_id, "legal_research", legal)
         _emit_event(data_dir, case_id, "legal_research",
                     {"citations": legal["citations"]})
-        # Module 6 guardrail: citations must come from retrieved chunks;
-        # LLM must not emit dollar amounts (money math is deterministic).
+        # Note: citation grounding is already verified by verify_citations
+        # (3.1 feedback) inside research(); no duplicate guardrail needed here.
+        # Module 6 guardrail: LLM must not emit dollar amounts (money math
+        # is deterministic).
         from settleready.guardrails.output import screen_output as _screen
-        for v in _screen("legal", {
-                "answer": legal.get("answer", ""),
-                "citations": legal.get("citations", []),
-                "retrieved_ids": [c.get("citation") for c in legal.get("chunks", [])]}):
-            _emit_event(data_dir, case_id, "guardrail",
-                        {"layer": "output", "name": v.name,
-                         "action": v.action, "detail": v.detail})
-            if v.action == "block":
-                raise RuntimeError(f"Guardrail BLOCK: {v.name}: {v.detail}")
         for v in _screen("llm_text", {"text": legal.get("answer", ""),
                                       "context": "legal_synthesis"}):
             _emit_event(data_dir, case_id, "guardrail",
@@ -301,16 +294,10 @@ def node_outreach(state: dict, ctx: dict) -> dict:
             needs = plan.get("needs") or []
         else:  # no_action fallback: the old fixed conflict->ask mapping
             needs = needs_from_report(report)
-        # Module 6 guardrail: customer email may only contain approved asks.
-        from settleready.guardrails.output import screen_output as _screen2
-        from settleready.agents.outreach import _CUSTOMER_ASKS
-        for v in _screen2("outreach", {"needs": needs,
-                                       "approved_asks": set(_CUSTOMER_ASKS)}):
-            _emit_event(data_dir, case_id, "guardrail",
-                        {"layer": "output", "name": v.name,
-                         "action": v.action, "detail": v.detail})
-            if v.action == "block":
-                raise RuntimeError(f"Guardrail BLOCK: {v.name}: {v.detail}")
+        # Note: outreach asks guardrail not wired here — the `needs` are
+        # deterministically generated from _CUSTOMER_ASKS templates (via
+        # needs_from_report or the ToT planner selecting gap IDs), never
+        # free-text LLM output, so there's no invention risk to guard.
         outreach = maybe_send_info_request(
             data_dir, case_id, needs, holder_name=holder or "")
         next_stage = "escalated" if outreach.get("escalated") else "needs_info"

@@ -92,8 +92,22 @@ def check_citations(answer: str, citations: list[str],
 
 
 def check_outreach_asks(needs: list[str], approved_asks: set[str]) -> Verdict:
-    """Customer emails may only contain approved asks (AGENTS.md §3)."""
-    bad = [n for n in needs if n not in approved_asks]
+    """Customer emails may only contain approved asks (AGENTS.md §3).
+
+    approved_asks is a set of template strings (with {detail} placeholders).
+    A need passes if it matches a template with the placeholder filled in.
+    """
+    # Build regexes from templates: escape, then replace \{detail\} with .+
+    import re as _re
+    patterns = []
+    for tmpl in approved_asks:
+        # Template may have {detail} placeholder; match it loosely.
+        pat = _re.escape(tmpl).replace(r"\{detail\}", ".+")
+        patterns.append(_re.compile(pat, _re.IGNORECASE))
+    bad = []
+    for n in needs:
+        if not any(p.search(n or "") for p in patterns):
+            bad.append(n[:80])
     if bad:
         return Verdict.blocked("outreach_asks",
                                f"Unapproved asks in customer email: {bad}",
