@@ -71,14 +71,12 @@ class MeteredProvider:
         self.calls += 1
         cost = pt / 1e6 * self.price_in + ct / 1e6 * self.price_out
         if self.tracer is not None:
-            # Attach to the most recent open span, if any.
-            for span in reversed(self.tracer.spans):
-                if span.end_ts is None:
-                    span.set(llm_calls=span.attrs.get("llm_calls", 0) + 1,
-                             prompt_tokens=span.attrs.get("prompt_tokens", 0) + pt,
-                             completion_tokens=span.attrs.get("completion_tokens", 0) + ct,
-                             est_cost_usd=round(span.attrs.get("est_cost_usd", 0.0) + cost, 6))
-                    break
+            span = self.tracer.current_span()
+            if span is not None:
+                span.set(llm_calls=span.attrs.get("llm_calls", 0) + 1,
+                         prompt_tokens=span.attrs.get("prompt_tokens", 0) + pt,
+                         completion_tokens=span.attrs.get("completion_tokens", 0) + ct,
+                         est_cost_usd=round(span.attrs.get("est_cost_usd", 0.0) + cost, 6))
         return out
 
     def embed(self, text: str) -> list[float]:

@@ -97,6 +97,11 @@ class Tracer:
         self._path = os.path.join(data_dir, "obs", "traces.jsonl")
         os.makedirs(os.path.join(data_dir, "obs"), exist_ok=True)
         self.spans: list[Span] = []
+        self._open: list[Span] = []  # currently open spans (stack)
+
+    def current_span(self) -> Span | None:
+        """The innermost currently-open span, if any."""
+        return self._open[-1] if self._open else None
 
     @contextmanager
     def span(self, name: str, agent: str = "",
@@ -104,6 +109,7 @@ class Tracer:
         """Context manager yielding a Span; finishes and persists on exit."""
         span = Span(self, name, agent=agent,
                     parent_id=parent.span_id if parent else None, **attrs)
+        self._open.append(span)
         try:
             yield span
         except Exception as e:
@@ -114,6 +120,9 @@ class Tracer:
         else:
             span.end_ts = time.time()
         finally:
+            # Pop from open stack (may already be gone if nested weirdly).
+            if span in self._open:
+                self._open.remove(span)
             self._finish(span)
 
     def _finish(self, span: Span) -> None:

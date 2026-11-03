@@ -51,6 +51,15 @@ def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
     # Module 6 observability: one trace per run, metered LLM, structured logs.
     tracer = Tracer(data_dir, case_id)
     log = JsonLogger(data_dir, trace_id=tracer.trace_id, case_id=case_id)
+    # Resolve the provider here (not lazily in nodes) so the MeteredProvider
+    # actually sees the LLM calls. Nodes that receive None call get_provider()
+    # internally, bypassing the meter.
+    if provider is None:
+        try:
+            from settlerready.llm.provider import get_provider
+            provider = get_provider()
+        except Exception as e:  # noqa: BLE001
+            log.warning("provider_unavailable", error=str(e)[:200])
     if provider is not None:
         provider = MeteredProvider(provider, tracer=tracer)
     log.info("pipeline_started", trace_id=tracer.trace_id)
@@ -71,7 +80,8 @@ def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
         }
         if isinstance(provider, MeteredProvider):
             summary["llm_usage"] = provider.totals()
-            log.info("pipeline_finished", **provider.totals())
+        log.info("pipeline_finished", next=summary.get("next"),
+                 **(provider.totals() if isinstance(provider, MeteredProvider) else {}))
         for summary_key, state_key in (("outreach", "outreach"),
                                        ("disposition", "plan"),
                                        ("review", "review")):
