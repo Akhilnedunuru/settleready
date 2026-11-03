@@ -722,13 +722,16 @@ def tab_observability():
             for e in reversed(guard_evs):  # newest first
                 d = e.get("detail", {})
                 ts = e.get("ts", "")
-                # Format timestamp
+                # ts may be a Unix float or an ISO string
                 try:
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    ts_str = dt.strftime("%H:%M:%S")
-                except:
-                    ts_str = ts[:8] if ts else "?"
+                    if isinstance(ts, (int, float)):
+                        ts_str = time.strftime("%H:%M:%S", time.localtime(ts))
+                    else:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                        ts_str = dt.strftime("%H:%M:%S")
+                except Exception:
+                    ts_str = "?"
                 action = d.get("action", "?")
                 icon = "🔴" if action == "block" else "🟡" if action == "flag" else "🟢"
                 tid = d.get("trace_id", "")[:8]
