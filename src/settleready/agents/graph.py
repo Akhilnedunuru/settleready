@@ -370,11 +370,21 @@ def _run_graph(state: dict, ctx: dict) -> dict:
                 bb.close()
             except Exception:
                 pass
-            # Module 6 observability: span per node visit.
+            # Module 6 observability: span per node visit + structured log.
             tracer = ctx.get("tracer")
             if tracer is not None:
+                from settleready.obs.logging import JsonLogger
+                log = JsonLogger(s["data_dir"], trace_id=tracer.trace_id,
+                                 case_id=s["case_id"], component=f"node.{_name}")
+                log.info("node_started", node=_name)
                 with tracer.span(_name, agent=_name):
-                    return fn(s, ctx)
+                    try:
+                        out = fn(s, ctx)
+                    except Exception as e:
+                        log.error("node_failed", node=_name, error=str(e)[:200])
+                        raise
+                    log.info("node_finished", node=_name)
+                    return out
             return fn(s, ctx)
         return _node
 
