@@ -127,7 +127,7 @@ def main() -> None:
     ap.add_argument("--data", default="data")
     ap.add_argument("--case", required=True)
     args = ap.parse_args()
-    from settlerready.llm.provider import get_provider
+    from settleready.llm.provider import get_provider
     provider = get_provider()
     print(json.dumps(judge_case(args.data, args.case, provider), indent=2))
 

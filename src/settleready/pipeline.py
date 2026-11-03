@@ -56,7 +56,7 @@ def run_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
     # internally, bypassing the meter.
     if provider is None:
         try:
-            from settlerready.llm.provider import get_provider
+            from settleready.llm.provider import get_provider
             provider = get_provider()
         except Exception as e:  # noqa: BLE001
             log.warning("provider_unavailable", error=str(e)[:200])
