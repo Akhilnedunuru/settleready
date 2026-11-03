@@ -504,8 +504,13 @@ def plan_disposition(case_id: str, report: dict, data_dir: str = "data",
         followups = bb.read(case_id, "followup_count") or 0
     finally:
         bb.close()
+    # Note: `remaining` is ALL current customer gaps, not filtered by `asked`.
+    # A gap that was asked before but is still unresolved (still in the
+    # verification report) must be asked again — the user may have replied
+    # partially or not at all. The MAX_FOLLOWUPS budget (3) prevents
+    # infinite re-asking, not the asked-set.
     asked = set(_previously_asked_needs(case_id, data_dir))
-    remaining = [g for g in customer_gaps if g["ask_text"] not in asked]
+    remaining = list(customer_gaps)
     by_id = {g["id"]: g for g in customer_gaps}
 
     def _finish(outcome: str, needs: list[str], selected=None,

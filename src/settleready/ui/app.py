@@ -671,53 +671,69 @@ def tab_observability():
                         traces.append(r)
         except FileNotFoundError:
             pass
-        latest_tid = traces[-1].get("trace_id") if traces else None
         if not traces:
             st.info("No traces yet — run the pipeline to generate spans.")
         else:
-            # Latest trace_id only (one run)
-            spans = [t for t in traces if t.get("trace_id") == latest_tid]
-            st.caption(f"Trace `{latest_tid}` — {len(spans)} spans")
-            st.dataframe([{
-                "span": s.get("name"),
-                "agent": s.get("agent"),
-                "duration_ms": s.get("duration_ms"),
-                "status": s.get("status"),
-                "tokens": (s.get("attrs", {}).get("prompt_tokens", 0)
-                           + s.get("attrs", {}).get("completion_tokens", 0)),
-                "cost_usd": s.get("attrs", {}).get("est_cost_usd", 0),
-            } for s in spans], width="stretch")
-            tot_ms = sum(s.get("duration_ms", 0) for s in spans)
-            tot_tok = sum(s.get("attrs", {}).get("prompt_tokens", 0)
-                          + s.get("attrs", {}).get("completion_tokens", 0)
-                          for s in spans)
-            tot_cost = sum(s.get("attrs", {}).get("est_cost_usd", 0.0)
-                           for s in spans)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total time", f"{tot_ms:.0f} ms")
-            c2.metric("Total tokens", f"{tot_tok:,}")
-            c3.metric("Est. cost", f"${tot_cost:.4f}")
+            # All runs, newest first, with timestamps
+            # Group by trace_id, sort by start time desc
+            from collections import defaultdict
+            by_trace = defaultdict(list)
+            for t in traces:
+                by_trace[t.get("trace_id")].append(t)
+            # Sort traces by earliest span start_ts
+            sorted_tids = sorted(by_trace.keys(),
+                key=lambda tid: min(s.get("start_ts", 0) for s in by_trace[tid]),
+                reverse=True)
+            for tid in sorted_tids:
+                spans = by_trace[tid]
+                start = min(s.get("start_ts", 0) for s in spans)
+                start_str = time.strftime("%H:%M:%S", time.localtime(start)) if start else "?"
+                with st.expander(f"🕐 {start_str} — Run `{tid[:8]}` ({len(spans)} spans)", expanded=(tid == sorted_tids[0])):
+                    st.dataframe([{
+                        "span": s.get("name"),
+                        "agent": s.get("agent"),
+                        "started": time.strftime("%H:%M:%S", time.localtime(s.get("start_ts", 0))) if s.get("start_ts") else "?",
+                        "duration_ms": s.get("duration_ms"),
+                        "status": s.get("status"),
+                        "tokens": (s.get("attrs", {}).get("prompt_tokens", 0)
+                                   + s.get("attrs", {}).get("completion_tokens", 0)),
+                        "cost_usd": s.get("attrs", {}).get("est_cost_usd", 0),
+                    } for s in spans], width="stretch")
+                    tot_ms = sum(s.get("duration_ms", 0) for s in spans)
+                    tot_tok = sum(s.get("attrs", {}).get("prompt_tokens", 0)
+                                  + s.get("attrs", {}).get("completion_tokens", 0)
+                                  for s in spans)
+                    tot_cost = sum(s.get("attrs", {}).get("est_cost_usd", 0.0)
+                                   for s in spans)
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Total time", f"{tot_ms:.0f} ms")
+                    c2.metric("Total tokens", f"{tot_tok:,}")
+                    c3.metric("Est. cost", f"${tot_cost:.4f}")
 
     # -- Guardrails --------------------------------------------------------
     with st.container(border=True):
         st.markdown("**🛡️ Guardrails — blocks and flags**")
-        # Latest run only: filter by the latest trace_id (if any).
-        # Old events (no trace_id) are hidden once a traced run exists.
+        # All runs, with timestamps
         guard_evs = [e for e in events.tail(DATA_DIR, case_id=case_id, limit=500)
-                     if e.get("event") == "guardrail"
-                     and (latest_tid is None or
-                          e.get("detail", {}).get("trace_id") == latest_tid)]
+                     if e.get("event") == "guardrail"]
         if not guard_evs:
             st.info("No guardrail decisions recorded for this case.")
         else:
-            if latest_tid:
-                st.caption(f"Run `{latest_tid}`")
-            for e in guard_evs:
+            for e in reversed(guard_evs):  # newest first
                 d = e.get("detail", {})
+                ts = e.get("ts", "")
+                # Format timestamp
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    ts_str = dt.strftime("%H:%M:%S")
+                except:
+                    ts_str = ts[:8] if ts else "?"
                 action = d.get("action", "?")
                 icon = "🔴" if action == "block" else "🟡" if action == "flag" else "🟢"
-                st.write(f"{icon} `{d.get('layer')}/{d.get('name')}` — "
-                         f"**{action}**: {d.get('detail')}")
+                tid = d.get("trace_id", "")[:8]
+                st.write(f"`{ts_str}` {icon} `{d.get('layer')}/{d.get('name')}` — "
+                         f"**{action}**: {d.get('detail')}" + (f" `[{tid}]`" if tid else ""))
 
     # -- Structured logs ---------------------------------------------------
     with st.container(border=True):
@@ -725,11 +741,9 @@ def tab_observability():
         from settleready.obs.logging import read_logs
         level = st.selectbox("Level", ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"],
                              key="obs_log_level")
-        # Latest run only: filter by trace_id.
-        logs = read_logs(DATA_DIR, case_id=case_id, trace_id=latest_tid,
+        # All runs, with timestamps (already in the log view)
+        logs = read_logs(DATA_DIR, case_id=case_id,
                          level=None if level == "ALL" else level, limit=100)
-        if latest_tid:
-            st.caption(f"Run `{latest_tid}`")
         if not logs:
             st.info("No logs for this case yet.")
         else:
@@ -738,6 +752,7 @@ def tab_observability():
                 "level": l.get("level"),
                 "component": l.get("component"),
                 "msg": l.get("msg"),
+                "run": (l.get("trace_id") or "")[:8],
             } for l in logs], width="stretch")
 
 

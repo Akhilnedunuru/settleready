@@ -93,13 +93,16 @@ def test_budget_exhausted_escalates(tmp_path):
     assert out["outcome"] == "escalate"
 
 
-def test_already_asked_gap_is_not_reasked(tmp_path):
-    # Seed the ask first so the planner can dedupe against it.
+def test_already_asked_gap_is_reasked_if_still_unresolved(tmp_path):
+    # A gap that was asked before but is STILL in the report (unresolved)
+    # must be planned for again — the user may have replied partially.
+    # The MAX_FOLLOWUPS budget prevents infinite loops, not the asked-set.
     gaps, _ = gaps_from_report(_report(conflicts=[_MISMATCH]))
     dd = _world(tmp_path, asked_needs=[gaps[0]["ask_text"]])
     out = plan_disposition("C1", _report(conflicts=[_MISMATCH]),
                            data_dir=dd)
-    assert out["outcome"] == "no_action"
+    # Should plan (email or analyst_rework), NOT no_action
+    assert out["outcome"] in ("email", "analyst_rework", "escalate")
 
 
 def test_beam_width_and_depth_caps(tmp_path):
