@@ -638,6 +638,97 @@ def tab_audit():
 
 
 # ------------------------------------------------------------------ main ---
+@st.fragment(run_every=2)
+def tab_observability():
+    """Module 6 observability: traces, costs, logs, guardrails for the case."""
+    st.header("Observability")
+    case_id = _need_case()
+    if case_id is None:
+        return
+    st.caption("Module 6 — traces, token/cost, structured logs, and guardrail "
+               "decisions for this case. Refreshes every 2s.")
+
+    # -- Trace spans (timing per stage) -----------------------------------
+    with st.container(border=True):
+        st.markdown("**⏱️ Trace spans — timing per stage**")
+        import json as _json
+        traces = []
+        tpath = os.path.join(DATA_DIR, "obs", "traces.jsonl")
+        try:
+            with open(tpath, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    if r.get("case_id") == case_id:
+                        traces.append(r)
+        except FileNotFoundError:
+            pass
+        if not traces:
+            st.info("No traces yet — run the pipeline to generate spans.")
+        else:
+            # Latest trace_id only (one run)
+            latest_tid = traces[-1].get("trace_id")
+            spans = [t for t in traces if t.get("trace_id") == latest_tid]
+            st.caption(f"Trace `{latest_tid}` — {len(spans)} spans")
+            st.dataframe([{
+                "span": s.get("name"),
+                "agent": s.get("agent"),
+                "duration_ms": s.get("duration_ms"),
+                "status": s.get("status"),
+                "tokens": (s.get("attrs", {}).get("prompt_tokens", 0)
+                           + s.get("attrs", {}).get("completion_tokens", 0)),
+                "cost_usd": s.get("attrs", {}).get("est_cost_usd", 0),
+            } for s in spans], width="stretch")
+            tot_ms = sum(s.get("duration_ms", 0) for s in spans)
+            tot_tok = sum(s.get("attrs", {}).get("prompt_tokens", 0)
+                          + s.get("attrs", {}).get("completion_tokens", 0)
+                          for s in spans)
+            tot_cost = sum(s.get("attrs", {}).get("est_cost_usd", 0.0)
+                           for s in spans)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total time", f"{tot_ms:.0f} ms")
+            c2.metric("Total tokens", f"{tot_tok:,}")
+            c3.metric("Est. cost", f"${tot_cost:.4f}")
+
+    # -- Guardrails --------------------------------------------------------
+    with st.container(border=True):
+        st.markdown("**🛡️ Guardrails — blocks and flags**")
+        guard_evs = [e for e in events.tail(DATA_DIR, case_id=case_id, limit=500)
+                     if e.get("event") == "guardrail"]
+        if not guard_evs:
+            st.info("No guardrail decisions recorded for this case.")
+        else:
+            for e in guard_evs:
+                d = e.get("detail", {})
+                action = d.get("action", "?")
+                icon = "🔴" if action == "block" else "🟡" if action == "flag" else "🟢"
+                st.write(f"{icon} `{d.get('layer')}/{d.get('name')}` — "
+                         f"**{action}**: {d.get('detail')}")
+
+    # -- Structured logs ---------------------------------------------------
+    with st.container(border=True):
+        st.markdown("**📝 Structured logs**")
+        from settleready.obs.logging import read_logs
+        level = st.selectbox("Level", ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"],
+                             key="obs_log_level")
+        logs = read_logs(DATA_DIR, case_id=case_id,
+                         level=None if level == "ALL" else level, limit=100)
+        if not logs:
+            st.info("No logs for this case yet.")
+        else:
+            st.dataframe([{
+                "time": time.strftime("%H:%M:%S", time.localtime(l["ts"])),
+                "level": l.get("level"),
+                "component": l.get("component"),
+                "msg": l.get("msg"),
+            } for l in logs], width="stretch")
+
+
 def main() -> None:
     st.set_page_config(page_title="SettleReady", layout="wide")
     st.title("SettleReady — total-loss case preparation")
@@ -649,7 +740,7 @@ def main() -> None:
 
     case_picker()  # global, always visible above the tabs, auto-refreshes
 
-    tabs = st.tabs(["Emails", "Packet", "Review", "Audit trail"])
+    tabs = st.tabs(["Emails", "Packet", "Review", "Audit trail", "Observability"])
     with tabs[0]:
         tab_emails()
     with tabs[1]:
@@ -658,6 +749,8 @@ def main() -> None:
         tab_review()
     with tabs[3]:
         tab_audit()
+    with tabs[4]:
+        tab_observability()
 
 
 if __name__ == "__main__":

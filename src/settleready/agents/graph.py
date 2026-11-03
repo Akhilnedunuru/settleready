@@ -370,6 +370,11 @@ def _run_graph(state: dict, ctx: dict) -> dict:
                 bb.close()
             except Exception:
                 pass
+            # Module 6 observability: span per node visit.
+            tracer = ctx.get("tracer")
+            if tracer is not None:
+                with tracer.span(_name, agent=_name):
+                    return fn(s, ctx)
             return fn(s, ctx)
         return _node
 
@@ -420,13 +425,14 @@ def _run_fallback(state: dict, ctx: dict) -> dict:
     return state
 
 
-def run_case_graph(case_id: str, data_dir: str = "data", provider=None) -> dict:
+def run_case_graph(case_id: str, data_dir: str = "data", provider=None,
+                   tracer=None) -> dict:
     """Run the multi-agent graph for one case. Returns the final graph state.
 
     The case must already exist in the blackboard (pipeline.run_case creates
     it). Raises on node failure — the caller owns the pipeline_failed event.
     """
-    ctx = {"provider": provider}
+    ctx = {"provider": provider, "tracer": tracer}
     state: dict = {"case_id": case_id, "data_dir": data_dir}
     # Clear any stale path from a previous run — the nodes record fresh visits.
     try:
