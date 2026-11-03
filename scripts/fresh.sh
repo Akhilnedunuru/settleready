@@ -20,6 +20,7 @@ export PYTHONPATH="$PWD/src"
 # runtime state the watcher/pipeline/UI create as they work
 rm -f data/blackboard.db data/tally.db data/intake_state.json data/inbox.json
 rm -f data/events.jsonl
+rm -f data/obs/traces.jsonl data/obs/pipeline.jsonl
 rm -rf data/chroma data/running data/pdfs
 echo "Fresh data/ ready. Next:"
 echo "  bash scripts/build_index.sh   # build the statute RAG index"
