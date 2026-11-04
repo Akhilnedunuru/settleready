@@ -21,7 +21,7 @@ export PYTHONPATH="$PWD/src"
 rm -f data/blackboard.db data/tally.db data/intake_state.json data/inbox.json
 rm -f data/events.jsonl
 rm -f data/obs/traces.jsonl data/obs/pipeline.jsonl
-rm -rf data/chroma data/running data/pdfs
+rm -rf data/chroma data/running data/pdfs data/customer_docs
 echo "Fresh data/ ready. Next:"
 echo "  bash scripts/build_index.sh   # build the statute RAG index"
 echo "  bash scripts/start.sh         # watcher + Streamlit UI in one terminal"

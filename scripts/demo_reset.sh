@@ -20,6 +20,8 @@ fi
 bash scripts/fresh.sh
 bash scripts/seed.sh "$N" "$TALLY_FLAG"
 bash scripts/build_index.sh
+bash scripts/gen_customer_docs.sh
 echo ""
 echo "Reset complete: $N cases seeded, RAG index built, all case state wiped."
+echo "Customer reply docs in data/customer_docs/<case_id>/."
 echo "Start with:  bash scripts/start.sh"
