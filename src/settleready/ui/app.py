@@ -674,6 +674,19 @@ def tab_observability():
         if not traces:
             st.info("No traces yet — run the pipeline to generate spans.")
         else:
+            # Grand totals across ALL runs for this case
+            all_tok = sum(s.get("attrs", {}).get("prompt_tokens", 0)
+                          + s.get("attrs", {}).get("completion_tokens", 0)
+                          for s in traces)
+            all_cost = sum(s.get("attrs", {}).get("est_cost_usd", 0.0)
+                           for s in traces)
+            all_ms = sum(s.get("duration_ms", 0) for s in traces)
+            g1, g2, g3, g4 = st.columns(4)
+            g1.metric("Runs", f"{len(set(t.get('trace_id') for t in traces))}")
+            g2.metric("Total time (all runs)", f"{all_ms:.0f} ms")
+            g3.metric("Total tokens (all runs)", f"{all_tok:,}")
+            g4.metric("Total cost (all runs)", f"${all_cost:.4f}")
+            st.divider()
             # All runs, newest first, with timestamps
             # Group by trace_id, sort by start time desc
             from collections import defaultdict
