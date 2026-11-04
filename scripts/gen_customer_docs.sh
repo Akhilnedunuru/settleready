@@ -31,7 +31,12 @@ for case in cases:
     missing = ALL_DOCS - have
     # Only generate docs that make sense as customer replies (title, repair_estimate)
     # claim_form and police_report are intake-only.
-    customer_docs = [d for d in missing if d in ("title", "repair_estimate")]
+    # repair_estimate only for collision cases (they have repair_estimate_total).
+    customer_docs = []
+    if "title" in missing:
+        customer_docs.append("title")
+    if "repair_estimate" in missing and "repair_estimate_total" in case:
+        customer_docs.append("repair_estimate")
     if not customer_docs:
         continue
     dest = os.path.join(OUT, "customer_docs", case_id)
