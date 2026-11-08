@@ -184,10 +184,10 @@ class IntakeWatcher:
             return {"email": email.id, "action": "duplicate_claim",
                     "case_id": case_id,
                     "detail": "pipeline already triggered for this case"}
-        # Real-world step: persist the email's PDF attachments as the case's
+        # Real-world step: persist the email's attachments as the case's
         # documents before the pipeline runs. (The mock's demo emails carry no
         # attachments; their PDFs come from scripts/seed.sh.)
-        saved = self._save_attachments(email, case_id)
+        saved, _skipped = self._save_attachments(email, case_id)
         pdf_dir = os.path.join(self._data_dir, "pdfs", case_id)
         if not os.path.isdir(pdf_dir):
             return {"email": email.id, "action": "no_documents",
@@ -206,25 +206,60 @@ class IntakeWatcher:
                 "case_id": case_id, "routed": summary.get("next"),
                 "attachments_saved": saved}
 
-    def _save_attachments(self, email: EmailRecord, case_id: str) -> list[str]:
-        """Decode the email's PDF attachments into data/pdfs/<case_id>/.
+    # Attachment handling limits (Module 6 hardening).
+    MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB per file
+    ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 
-        Returns the saved filenames. Non-PDF attachments are ignored for now.
+    def _save_attachments(self, email: EmailRecord,
+                          case_id: str) -> tuple[list[str], list[dict]]:
+        """Decode the email's attachments into data/pdfs/<case_id>/.
+
+        Returns (saved_filenames, skipped) where skipped is a list of
+        {"filename", "reason"} dicts. Images are accepted (OCR via
+        pdf_parser); non-PDF/non-image files, oversized files, and
+        undecodable content are skipped with a recorded reason.
         """
         import base64
 
-        saved = []
+        saved: list[str] = []
+        skipped: list[dict] = []
         for att in email.attachments or []:
-            filename = att.get("filename", "")
-            if not filename.lower().endswith(".pdf"):
+            filename = att.get("filename", "") or "unnamed"
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in self.ALLOWED_EXTS:
+                skipped.append({"filename": filename,
+                                "reason": f"unsupported file type: {ext or '(none)'}"})
                 continue
-            safe = os.path.basename(filename)  # no path traversal from mail
+            try:
+                raw = base64.b64decode(att.get("content_b64", ""))
+            except Exception:  # noqa: BLE001
+                skipped.append({"filename": filename,
+                                "reason": "could not decode attachment content"})
+                continue
+            if len(raw) > self.MAX_ATTACHMENT_BYTES:
+                skipped.append({"filename": filename,
+                                "reason": f"exceeds {self.MAX_ATTACHMENT_BYTES // (1024*1024)} MB size limit "
+                                          f"({len(raw) // (1024*1024)} MB)"})
+                continue
+            # Filename sanity: must look like a document for this case.
+            # Customers name files arbitrarily ("IMG_1234.jpg"), so we only
+            # reject names that clearly belong to another case or are empty.
+            safe = os.path.basename(filename)
+            if not safe or safe.startswith("."):
+                skipped.append({"filename": filename,
+                                "reason": "invalid filename"})
+                continue
             pdf_dir = os.path.join(self._data_dir, "pdfs", case_id)
             os.makedirs(pdf_dir, exist_ok=True)
             with open(os.path.join(pdf_dir, safe), "wb") as f:
-                f.write(base64.b64decode(att["content_b64"]))
+                f.write(raw)
             saved.append(safe)
-        return saved
+        # Feedback: record every skipped attachment so the customer (and the
+        # analyst) can see why a file was not accepted.
+        for s in skipped:
+            _emit_event(self._data_dir, case_id, "attachment_skipped",
+                        {"filename": s["filename"], "reason": s["reason"]})
+        return saved, skipped
 
     def _handle_reply(self, email: EmailRecord, bb: CaseBlackboard) -> dict:
         case_id = extract_case_id(email)
@@ -235,7 +270,7 @@ class IntakeWatcher:
         bb.log(case_id, case["stage"], "customer_reply",
                {"from": email.from_, "body": email.body[:500]})
         # Documents the customer sends back become case documents...
-        saved = self._save_attachments(email, case_id)
+        saved, skipped = self._save_attachments(email, case_id)
         # ...and a text-only reply still counts: the statement is fed to
         # extraction as a customer document on the next run (e.g. confirming
         # a lien in words), so the loop can resolve without new PDFs.
@@ -282,6 +317,7 @@ class IntakeWatcher:
             bb.write(case_id, "customer_statements", stmts)
         _emit_event(self._data_dir, case_id, "reply_received",
                     {"from": email.from_, "attachments": saved,
+                     "attachments_skipped": skipped,
                      "body": cleaned[:2000],
                      "body_len": len(email.body or ""),
                      "reply_type": classification["type"]})

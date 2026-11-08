@@ -12,7 +12,7 @@ from settleready.agents.intake import (
     route_claim,
 )
 from settleready.memory.blackboard import CaseBlackboard
-from settleready.tools.email_client import MockEmailClient
+from settleready.tools.email_client import EmailRecord, MockEmailClient
 
 
 def _mail(tmp_path, **kw):
@@ -290,3 +290,51 @@ def test_reply_stores_only_new_text_not_quoted_thread(tmp_path):
     assert "Lone Star Credit Union" in stmts[0]["body"]
     assert "Claimant declared no lien" not in stmts[0]["body"]
     assert "wrote:" not in stmts[0]["body"]
+
+
+def test_image_attachment_is_saved(tmp_path):
+    """Images (phone photos of docs) are accepted, not silently dropped."""
+    import base64
+    from settleready.agents.intake import IntakeWatcher
+    w = IntakeWatcher(data_dir=str(tmp_path))
+    email = EmailRecord(id="test", to="x", from_="c@example.com",
+                            subject="Re: TL-2026-1043", body="photo attached",
+                            ts="", direction="inbound",
+                            attachments=[{"filename": "title.jpg",
+                                          "content_b64": base64.b64encode(b"fake-jpg").decode()}])
+    saved, skipped = w._save_attachments(email, "TL-2026-1043")
+    assert saved == ["title.jpg"]
+    assert skipped == []
+
+
+def test_unsupported_attachment_is_skipped_with_reason(tmp_path):
+    import base64
+    from settleready.agents.intake import IntakeWatcher
+    w = IntakeWatcher(data_dir=str(tmp_path))
+    email = EmailRecord(id="test", to="x", from_="c@example.com",
+                            subject="Re: TL-2026-1043", body="see attached",
+                            ts="", direction="inbound",
+                            attachments=[{"filename": "notes.docx",
+                                          "content_b64": base64.b64encode(b"fake").decode()},
+                                         {"filename": "malware.exe",
+                                          "content_b64": base64.b64encode(b"fake").decode()}])
+    saved, skipped = w._save_attachments(email, "TL-2026-1043")
+    assert saved == []
+    assert len(skipped) == 2
+    assert all("unsupported file type" in s["reason"] for s in skipped)
+
+
+def test_oversized_attachment_is_skipped(tmp_path):
+    import base64
+    from settleready.agents.intake import IntakeWatcher
+    w = IntakeWatcher(data_dir=str(tmp_path))
+    big = b"x" * (IntakeWatcher.MAX_ATTACHMENT_BYTES + 1)
+    email = EmailRecord(id="test", to="x", from_="c@example.com",
+                            subject="Re: TL-2026-1043", body="big file",
+                            ts="", direction="inbound",
+                            attachments=[{"filename": "huge.pdf",
+                                          "content_b64": base64.b64encode(big).decode()}])
+    saved, skipped = w._save_attachments(email, "TL-2026-1043")
+    assert saved == []
+    assert len(skipped) == 1
+    assert "size limit" in skipped[0]["reason"]
