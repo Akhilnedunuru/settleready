@@ -27,7 +27,7 @@ from settleready.memory.blackboard import CaseBlackboard
 from settleready.memory.events import emit as _emit_event
 from settleready.tools.email_client import CASE_ID_RE, EmailRecord, get_email_client
 
-REWORK_STAGES = ("needs_info", "analyst_rework")  # waiting on the customer/analyst
+REWORK_STAGES = ("needs_info", "analyst_rework", "customer_question")  # waiting on the customer/analyst
 
 
 def _ts() -> str:
