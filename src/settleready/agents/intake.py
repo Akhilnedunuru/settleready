@@ -262,6 +262,20 @@ class IntakeWatcher:
                              "detail": blocked[0].detail})
                 return {"email": email.id, "action": "reply_blocked",
                         "detail": blocked[0].detail}
+        # Hybrid reply classification: a question-type reply must NOT trigger
+        # another document-request email — it routes to human review instead.
+        from settleready.agents.reply_classifier import classify_reply
+        try:
+            from settleready.llm.provider import get_provider
+            _prov = get_provider()
+        except Exception:  # noqa: BLE001 — no API key; heuristic-only mode
+            _prov = None
+        classification = classify_reply(
+            cleaned, has_attachments=bool(saved), provider=_prov)
+        _emit_event(self._data_dir, case_id, "reply_classified",
+                    {"type": classification["type"],
+                     "reason": classification["reason"],
+                     "method": classification["method"]})
         if cleaned:
             stmts = bb.read(case_id, "customer_statements") or []
             stmts.append({"from": email.from_, "body": cleaned[:2000]})
@@ -269,7 +283,17 @@ class IntakeWatcher:
         _emit_event(self._data_dir, case_id, "reply_received",
                     {"from": email.from_, "attachments": saved,
                      "body": cleaned[:2000],
-                     "body_len": len(email.body or "")})
+                     "body_len": len(email.body or ""),
+                     "reply_type": classification["type"]})
+        # Question-type reply: flag for human, do NOT re-run the pipeline
+        # for documents (would spam the customer with repeat requests).
+        if classification["type"] == "asks_question":
+            bb.set_stage(case_id, "customer_question", event="reply",
+                         details={"question": cleaned[:500]})
+            _emit_event(self._data_dir, case_id, "customer_question",
+                        {"question": cleaned[:500]})
+            return {"email": email.id, "action": "reply_question",
+                    "case_id": case_id, "detail": "routed to human review"}
         if case["stage"] in REWORK_STAGES:
             try:
                 print(f"[{_ts()}] pipeline start {case_id} (customer reply) …", flush=True)
