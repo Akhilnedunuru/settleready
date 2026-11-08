@@ -741,7 +741,10 @@ def tab_observability():
         m5.metric("Avg run time", f"{_avg_ms:.0f} ms")
         m6.metric("Pipeline failures", f"{_fail_count}")
         m7.metric("Failure rate", f"{_fail_rate:.1f}%")
-        m8.metric("Cases by stage", f"{len(CaseBlackboard.list_cases()) if hasattr(CaseBlackboard, 'list_cases') else '?'}")
+        _bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
+        _n = len(_bb.list_cases())
+        _bb.close()
+        m8.metric("Total cases", f"{_n}")
 
     # -- Trace spans (timing per stage) -----------------------------------
     with st.container(border=True):
