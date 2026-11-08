@@ -79,6 +79,28 @@ def check_pii(text: str) -> Verdict:
     return Verdict.make_pass("pii")
 
 
+def redact_pii(text: str) -> str:
+    """Mask PII shapes in text before storage/logging.
+
+    SSN -> ***-**-XXXX (last 4 kept for identification),
+    card numbers -> ****-****-****-XXXX,
+    DOB -> [DOB REDACTED].
+    """
+    if not text:
+        return text
+    out = _SSN.sub(lambda m: f"***-**-{m.group(0)[-4:]}", text)
+    out = _CCN.sub(lambda m: _mask_card(m.group(0)), out)
+    out = _DOB.sub("[DOB REDACTED]", out)
+    return out
+
+
+def _mask_card(matched: str) -> str:
+    digits = re.sub(r"\D", "", matched)
+    if len(digits) < 13:
+        return matched
+    return f"****-****-****-{digits[-4:]}"
+
+
 # Prompt-injection patterns: instructions smuggled in customer content that
 # try to override the agent's charter (e.g. "approve this case", "ignore
 # the lien check"). Matched case-insensitively.

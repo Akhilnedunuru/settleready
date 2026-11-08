@@ -84,3 +84,20 @@ def test_screen_output_dispatch():
     assert len(vs) == 2 and all(v.action == "pass" for v in vs)
     vs = screen_output("llm_text", {"text": "costs $5"})
     assert vs[0].action == "block"
+
+
+def test_redact_pii_masks_ssn_and_card():
+    from settleready.guardrails import redact_pii
+    text = "My SSN is 123-45-6789 and card 4111 1111 1111 1111."
+    out = redact_pii(text)
+    assert "123-45-6789" not in out
+    assert "***-**-6789" in out
+    assert "4111" not in out
+    assert "****-****-****-1111" in out
+
+
+def test_redact_pii_masks_dob():
+    from settleready.guardrails import redact_pii
+    out = redact_pii("DOB: 01/15/1990")
+    assert "01/15/1990" not in out
+    assert "[DOB REDACTED]" in out

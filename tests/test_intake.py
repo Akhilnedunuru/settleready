@@ -338,3 +338,68 @@ def test_oversized_attachment_is_skipped(tmp_path):
     assert saved == []
     assert len(skipped) == 1
     assert "size limit" in skipped[0]["reason"]
+
+
+def test_bounce_flags_case_as_email_bounced(tmp_path):
+    """A delivery-failure notice marks the case for human follow-up."""
+    from settleready.agents.intake import IntakeWatcher, is_bounce
+    from settleready.tools.email_client import EmailRecord, MockEmailClient
+    from settleready.memory.blackboard import CaseBlackboard
+    import os
+
+    # Seed a case
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    bb.create_case("TL-2026-1043")
+    bb.write("TL-2026-1043", "claimant_email", "customer@example.com")
+    bb.close()
+
+    bounce = EmailRecord(id="b1", to="claims@demo.local",
+                         from_="mailer-daemon@googlemail.com",
+                         subject="Delivery Status Notification (Failure) — Re: TL-2026-1043",
+                         body="Delivery to customer@example.com failed.",
+                         ts="", direction="inbound", attachments=[])
+    assert is_bounce(bounce) is True
+
+    mail = MockEmailClient(data_dir=str(tmp_path))
+    w = IntakeWatcher(data_dir=str(tmp_path), mail=mail,
+                      run_fn=lambda cid: {"next": "needs_info"})
+    res = w._handle_bounce(bounce, CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db")))
+    assert res["action"] == "bounce_flagged"
+    assert res["case_id"] == "TL-2026-1043"
+    bb2 = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    assert bb2.get_case("TL-2026-1043")["stage"] == "email_bounced"
+    bb2.close()
+
+
+def test_reply_statement_redacts_pii(tmp_path):
+    """SSNs in a customer reply are masked before storage."""
+    from settleready.agents.intake import IntakeWatcher
+    from settleready.tools.email_client import EmailRecord, MockEmailClient
+    from settleready.memory.blackboard import CaseBlackboard
+    import os
+
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    bb.create_case("TL-2026-1043")
+    bb.write("TL-2026-1043", "claimant_email", "customer@example.com")
+    bb.set_stage("TL-2026-1043", "needs_info")
+    bb.close()
+
+    mail = MockEmailClient(data_dir=str(tmp_path))
+    w = IntakeWatcher(data_dir=str(tmp_path), mail=mail,
+                      run_fn=lambda cid: {"next": "needs_info"})
+    reply = EmailRecord(id="r1", to="claims@demo.local",
+                        from_="customer@example.com",
+                        subject="Re: TL-2026-1043",
+                        body="My SSN is 123-45-6789, lien confirmed.",
+                        ts="", direction="inbound", attachments=[])
+    bb3 = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    try:
+        w._handle_reply(reply, bb3)
+    finally:
+        bb3.close()
+    bb4 = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    stmts = bb4.read("TL-2026-1043", "customer_statements") or []
+    assert stmts, "statement should be stored"
+    assert "123-45-6789" not in stmts[0]["body"]
+    assert "***-**-6789" in stmts[0]["body"]
+    bb4.close()

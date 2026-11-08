@@ -83,6 +83,23 @@ def is_claim_email(email: EmailRecord) -> bool:
     return extract_case_id(email) is not None
 
 
+def is_bounce(email: EmailRecord) -> bool:
+    """Detect a delivery-failure notification for a case email.
+
+    Bounces arrive from mailer-daemon/postmaster or carry a delivery-failure
+    subject. The original case ID is usually preserved in the subject or body.
+    """
+    sender = (email.from_ or "").lower()
+    subject = (email.subject or "").lower()
+    if "mailer-daemon" in sender or "postmaster" in sender:
+        return True
+    if any(k in subject for k in ("delivery failure", "undeliverable",
+                                  "returned mail", "delivery status",
+                                  "mail delivery failed", "bounce")):
+        return True
+    return False
+
+
 class IntakeWatcher:
     """Polls the inbox and fires the pipeline. `run_fn` is injectable for tests."""
 
@@ -148,6 +165,11 @@ class IntakeWatcher:
                 if email.id in seen:
                     continue
                 self._mark_seen(email.id)
+                # Bounce handling: a delivery failure for a case email marks
+                # the case as email_bounced so a human can fix the address.
+                if is_bounce(email):
+                    actions.append(self._handle_bounce(email, bb))
+                    continue
                 if not is_claim_email(email):
                     actions.append({"email": email.id, "action": "ignored",
                                     "detail": f"no case ID in subject={email.subject!r}"})
@@ -159,6 +181,27 @@ class IntakeWatcher:
         finally:
             bb.close()
         return actions
+
+    def _handle_bounce(self, email: EmailRecord, bb: CaseBlackboard) -> dict:
+        """A delivery-failure notice: find the case and flag it."""
+        # The case ID is usually in the subject or the quoted original.
+        case_id = extract_case_id(email)
+        if not case_id:
+            # Try the body (bounce notifications quote the original).
+            import re as _re
+            m = _re.search(r"TL-\d{4}-\d{4}", email.body or "")
+            case_id = m.group(0) if m else None
+        if not case_id or not bb.get_case(case_id):
+            return {"email": email.id, "action": "bounce_uncorrelated",
+                    "detail": f"subject={email.subject!r}"}
+        bb.set_stage(case_id, "email_bounced", event="bounce",
+                     details={"bounce_subject": (email.subject or "")[:200],
+                              "from": email.from_})
+        _emit_event(self._data_dir, case_id, "email_bounced",
+                    {"subject": (email.subject or "")[:200],
+                     "from": email.from_})
+        return {"email": email.id, "action": "bounce_flagged",
+                "case_id": case_id}
 
     def _handle_new_claim(self, email: EmailRecord) -> dict:
         case_id = extract_case_id(email)
@@ -267,8 +310,9 @@ class IntakeWatcher:
         if not case:
             return {"email": email.id, "action": "reply_uncorrelated",
                     "detail": f"subject={email.subject!r}"}
+        from settleready.guardrails import redact_pii as _redact
         bb.log(case_id, case["stage"], "customer_reply",
-               {"from": email.from_, "body": email.body[:500]})
+               {"from": email.from_, "body": _redact(email.body or "")[:500]})
         # Documents the customer sends back become case documents...
         saved, skipped = self._save_attachments(email, case_id)
         # ...and a text-only reply still counts: the statement is fed to
@@ -311,6 +355,9 @@ class IntakeWatcher:
                     {"type": classification["type"],
                      "reason": classification["reason"],
                      "method": classification["method"]})
+        # Redact PII before storing: the statement is kept for extraction,
+        # but SSNs/card numbers must never persist in the blackboard.
+        cleaned = _redact(cleaned) if cleaned else cleaned
         if cleaned:
             stmts = bb.read(case_id, "customer_statements") or []
             stmts.append({"from": email.from_, "body": cleaned[:2000]})
