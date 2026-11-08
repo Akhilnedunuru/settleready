@@ -121,3 +121,33 @@ def test_override_value_sticks_despite_higher_confidence_form():
     assert out["fields"]["lien_declared"]["value"] is True
     assert "customer_reply" in out["fields"]["lien_declared"]["source"]
     assert out["fields"]["lien_holder"]["value"] == "Lone Star Credit Union"
+
+
+def test_deterministic_fallback_when_llm_down():
+    """If the LLM produces nothing, regex fallback extracts key fields."""
+    from settleready.agents.extraction import extract_fields
+
+    class _Down:
+        def complete(self, **kw):
+            raise RuntimeError("LLM down")
+
+    docs = [{
+        "source": "claim_form.pdf",
+        "pages": [{"page": 1, "text": (
+            "VIN: 1HGCM82633A004352\n"
+            "Mileage: 82,400\n"
+            "Policy Number: POL-884120\n"
+            "Title State: TX\n"
+            "Holder: Marcus Kim\n"
+            "Loss: theft\n"
+            "Lien: NO\n"
+        )}],
+    }]
+    out = extract_fields(docs, provider=_Down())
+    fields = out["fields"]
+    assert fields["vin"]["value"] == "1HGCM82633A004352"
+    assert fields["mileage"]["value"] == 82400
+    assert fields["loss_type"]["value"] == "theft"
+    # Confidence capped below threshold -> still flags for human review
+    assert all(f["confidence"] == 0.7 for f in fields.values())
+    assert "vin" in out["flags"]  # below 0.8 threshold

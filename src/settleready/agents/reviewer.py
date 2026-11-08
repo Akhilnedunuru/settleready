@@ -25,6 +25,7 @@ REASON_CODES = {
     "MISSING_TITLE_DOC": ("title_document", "Title document missing or unreadable"),
     "LOW_CONFIDENCE_FIELDS": ("extraction", "Key fields below confidence threshold"),
     "WRONG_STATE_LAW": ("legal_research", "Wrong state's law cited"),
+    "REVIEWER_LLM_UNAVAILABLE": ("reviewer", "AI reviewer LLM unavailable — human review required"),
 }
 
 
@@ -223,10 +224,10 @@ def ai_review_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
     analyst still makes the final call). Return (bounded) -> the case rework
     target; after MAX_AI_RETURNS -> escalated to a human.
 
-    An LLM failure degrades to approve-with-note: the vetoes are the hard
-    safety net, the model is the soft second mind, and a broken model must
-    not silently become a blocker. The degradation is recorded in the audit
-    trail and the event bus.
+    An LLM failure degrades to RETURN-for-human-review (fail-closed): the
+    vetoes are the hard safety net, the model is the soft second mind, and a
+    broken model must not silently approve a case. The degradation is recorded
+    in the audit trail and the event bus.
 
     Returns {"decision", "stage", "target"|None, "reason_codes", "note",
              "ai_return_count", "degraded", "promoted"}.
@@ -256,10 +257,11 @@ def ai_review_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
             if llm_verdict is None:
                 _emit_event(data_dir, case_id, "reviewer_degraded",
                             {"reason": "reviewer LLM unavailable or unparseable; "
-                                       "deterministic checks passed"})
-                verdict = {"decision": "approve", "reason_codes": [],
-                           "note": "Reviewer LLM unavailable — approved on "
-                                   "deterministic checks only.",
+                                       "fail-closed to human review"})
+                verdict = {"decision": "return",
+                           "reason_codes": ["REVIEWER_LLM_UNAVAILABLE"],
+                           "note": "Reviewer LLM unavailable — routing to human "
+                                   "review instead of approving unchecked.",
                            "degraded": True}
             else:
                 verdict = {**llm_verdict, "degraded": False}
@@ -285,6 +287,15 @@ def ai_review_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
 
         # -- return ------------------------------------------------------
         codes = verdict["reason_codes"]
+        # Degraded (LLM unavailable): fail closed — escalate to human at once,
+        # do not burn an AI-return cycle on a case the AI never reviewed.
+        if verdict.get("degraded"):
+            bb.set_stage(case_id, "escalated", event="reviewer_degraded",
+                         details={"reason_codes": codes, "note": verdict["note"]})
+            return {"decision": "return", "stage": "escalated", "target": None,
+                    "reason_codes": codes, "note": verdict["note"],
+                    "ai_return_count": ai_returns, "degraded": True,
+                    "promoted": False}
         tally = ReturnTallyStore(os.path.join(data_dir, "tally.db"))
         promoted_any = False
         try:
@@ -307,7 +318,8 @@ def ai_review_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
                          details={**details, "escalated": True})
             return {"decision": "return", "stage": "escalated", "target": None,
                     "reason_codes": codes, "note": verdict["note"],
-                    "ai_return_count": ai_returns, "degraded": False,
+                    "ai_return_count": ai_returns,
+                    "degraded": verdict.get("degraded", False),
                     "promoted": promoted_any}
         target = next((_REWORK_TARGET[c] for c in codes if c in _REWORK_TARGET),
                       "ground")
@@ -315,7 +327,8 @@ def ai_review_case(case_id: str, data_dir: str = "data", provider=None) -> dict:
                     {**details, "target": target})
         return {"decision": "return", "stage": target, "target": target,
                 "reason_codes": codes, "note": verdict["note"],
-                "ai_return_count": ai_returns, "degraded": False,
+                "ai_return_count": ai_returns,
+                "degraded": verdict.get("degraded", False),
                 "promoted": promoted_any}
     finally:
         bb.close()

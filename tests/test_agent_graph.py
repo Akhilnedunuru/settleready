@@ -157,11 +157,11 @@ def test_reviewer_degraded_on_garbage_llm_output(tmp_path):
             return "not json at all"
 
     out = ai_review_case("TL-2026-1099", data_dir=dd, provider=_Garbage())
-    # Fail open with a recorded degradation: the vetoes are the hard safety
-    # net; a broken model must not silently become a blocker.
-    assert out["decision"] == "approve"
+    # Fail CLOSED on LLM failure: a broken model must not silently approve.
+    # Routes to human review instead.
+    assert out["decision"] == "return"
     assert out["degraded"] is True
-    assert out["stage"] == "ready_for_review"
+    assert out["stage"] == "escalated"
 
 
 def test_reviewer_degraded_on_invalid_reason_codes(tmp_path):
@@ -171,8 +171,10 @@ def test_reviewer_degraded_on_invalid_reason_codes(tmp_path):
                                  "reason_codes": ["BOGUS_CODE"],
                                  "note": "x"})
     out = ai_review_case("TL-2026-1099", data_dir=dd, provider=provider)
-    assert out["decision"] == "approve"
+    # Invalid reason codes -> LLM verdict unusable -> fail closed (escalate).
+    assert out["decision"] == "return"
     assert out["degraded"] is True
+    assert out["stage"] == "escalated"
 
 
 def test_reviewer_return_routes_and_feeds_tally(tmp_path):

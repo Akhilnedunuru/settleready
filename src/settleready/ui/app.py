@@ -430,6 +430,48 @@ def tab_packet():
             _agent_flow_diagram(case_id)
     st.divider()
 
+    # -- Customer question reply (analyst answers, case returns to needs_info)
+    if packet["stage"] == "customer_question":
+        with st.container(border=True):
+            st.markdown("**❓ Customer question — reply needed**")
+            # Show the question from the stage details / latest event
+            _q = ""
+            for _e in events.tail(DATA_DIR, case_id=case_id, limit=50):
+                if _e.get("event") == "customer_question":
+                    _q = _e.get("detail", {}).get("question", "")
+                    break
+            if _q:
+                st.info(f"Customer asked: {_q}")
+            _reply = st.text_area("Your reply to the customer",
+                                  key=f"cq_reply_{case_id}",
+                                  placeholder="Type your answer here...")
+            if st.button("📤 Send reply & return case to needs_info",
+                         key=f"cq_send_{case_id}"):
+                if not _reply.strip():
+                    st.warning("Type a reply first.")
+                else:
+                    from settleready.tools.email_client import get_email_client
+                    from settleready.memory.blackboard import CaseBlackboard as _BB
+                    _bb = _BB(os.path.join(DATA_DIR, "blackboard.db"))
+                    try:
+                        _claimant = _bb.read(case_id, "claimant_email")
+                        _client = get_email_client(data_dir=DATA_DIR)
+                        _client.send(to=_claimant,
+                                     subject=f"Re: Your total-loss claim {case_id}",
+                                     body=_reply.strip())
+                        _bb.set_stage(case_id, "needs_info", event="analyst_reply",
+                                      details={"reply": _reply.strip()[:500]})
+                        from settleready.memory.events import emit as _emit
+                        _emit(DATA_DIR, case_id, "analyst_reply",
+                              {"reply": _reply.strip()[:500]})
+                        st.success("Reply sent — case returned to needs_info.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not send reply: {e}")
+                    finally:
+                        _bb.close()
+    st.divider()
+
     with st.container(border=True):
         st.markdown("**📋 Extracted fields**")
         # str() the values: the column mixes str/int/bool, which pyarrow can't serialize
@@ -650,6 +692,56 @@ def tab_observability():
         return
     st.caption("Module 6 — traces, token/cost, structured logs, and guardrail "
                "decisions for this case. Refreshes every 2s.")
+
+    # -- Aggregate metrics (all cases) -------------------------------------
+    with st.container(border=True):
+        st.markdown("**📊 Aggregate metrics — all cases**")
+        import json as _json2
+        _all_traces: list[dict] = []
+        _tpath = os.path.join(DATA_DIR, "obs", "traces.jsonl")
+        try:
+            with open(_tpath, encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if not _line:
+                        continue
+                    try:
+                        _all_traces.append(_json2.loads(_line))
+                    except _json2.JSONDecodeError:
+                        continue
+        except FileNotFoundError:
+            pass
+        # Failure rate from pipeline_failed events
+        _fail_count = 0
+        _run_count = 0
+        try:
+            for _e in events.tail(DATA_DIR, limit=1000):
+                if _e.get("event") == "pipeline_failed":
+                    _fail_count += 1
+                elif _e.get("event") == "pipeline_finished":
+                    _run_count += 1
+        except Exception:
+            pass
+        _tot_tok = sum(s.get("attrs", {}).get("prompt_tokens", 0)
+                       + s.get("attrs", {}).get("completion_tokens", 0)
+                       for s in _all_traces)
+        _tot_cost = sum(s.get("attrs", {}).get("est_cost_usd", 0.0)
+                        for s in _all_traces)
+        _tot_ms = sum(s.get("duration_ms", 0) for s in _all_traces)
+        _n_runs = len(set(t.get("trace_id") for t in _all_traces))
+        _n_cases = len(set(t.get("case_id") for t in _all_traces))
+        _fail_rate = (_fail_count / max(_run_count + _fail_count, 1)) * 100
+        _avg_ms = _tot_ms / max(_n_runs, 1)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total runs", f"{_n_runs}")
+        m2.metric("Cases with traces", f"{_n_cases}")
+        m3.metric("Total tokens (all)", f"{_tot_tok:,}")
+        m4.metric("Total cost (all)", f"${_tot_cost:.4f}")
+        m5, m6, m7, m8 = st.columns(4)
+        m5.metric("Avg run time", f"{_avg_ms:.0f} ms")
+        m6.metric("Pipeline failures", f"{_fail_count}")
+        m7.metric("Failure rate", f"{_fail_rate:.1f}%")
+        m8.metric("Cases by stage", f"{len(CaseBlackboard.list_cases()) if hasattr(CaseBlackboard, 'list_cases') else '?'}")
 
     # -- Trace spans (timing per stage) -----------------------------------
     with st.container(border=True):

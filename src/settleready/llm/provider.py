@@ -66,7 +66,26 @@ class OpenAIProvider:
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        return self._client.chat.completions.create(**kwargs).choices[0].message.content or ""
+        # Application-level retry with exponential backoff for transient
+        # errors (rate limits, 5xx, timeouts). Auth errors and bad requests
+        # fail fast — retrying them is pointless.
+        import time as _time
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                return self._client.chat.completions.create(**kwargs).choices[0].message.content or ""
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                msg = str(e).lower()
+                # Don't retry auth errors, invalid requests, or context length.
+                if any(k in msg for k in ("invalid api key", "authentication",
+                                          "incorrect api key", "bad request",
+                                          "context_length_exceeded",
+                                          "invalid_request_error")):
+                    raise
+                if attempt < 2:
+                    _time.sleep(2 ** attempt)  # 1s, 2s
+        raise last_exc  # type: ignore[misc]
 
     def embed(self, text: str) -> list[float]:
         return self._client.embeddings.create(model=self.embed_model, input=text).data[0].embedding

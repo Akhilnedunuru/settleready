@@ -44,6 +44,60 @@ Respond with ONLY valid JSON, exactly:
 _DOC_PRIORITY = {"claim_form": 0, "police_report": 1, "title": 2, "repair_estimate": 3}
 
 
+def _extract_deterministic(parsed_docs: list[dict]) -> dict:
+    """Regex-based fallback when the LLM is unavailable.
+
+    Extracts the most critical fields from the document text using patterns.
+    Confidence is capped at 0.7 (below the 0.8 threshold) so every field
+    still routes to human verification — the fallback keeps the pipeline
+    moving, it does not silently approve low-quality extraction.
+    """
+    import re as _re
+
+    text = "\n".join(
+        p["text"] for d in parsed_docs for p in d.get("pages", []))
+    fields: dict = {}
+
+    def _add(field: str, value, span: str = ""):
+        if value is not None and str(value).strip():
+            fields[field] = {"value": _normalize(field, value),
+                             "confidence": 0.7,
+                             "source": "deterministic_fallback",
+                             "span": span[:80]}
+
+    # VIN: 17 alphanumeric chars (excluding I, O, Q).
+    m = _re.search(r"\b[A-HJ-NPR-Z0-9]{17}\b", text)
+    if m:
+        _add("vin", m.group(0), m.group(0))
+    # Mileage: digits near "mileage" / "odometer".
+    m = _re.search(r"(?:mileage|odometer)[^\d]{0,20}([\d,]{1,7})", text, _re.I)
+    if m:
+        _add("mileage", m.group(1), m.group(0))
+    # Policy number: alphanumeric near "policy".
+    m = _re.search(r"policy(?:\s+number)?[^\w]{0,10}([A-Z0-9-]{6,})", text, _re.I)
+    if m:
+        _add("policy_number", m.group(1), m.group(0))
+    # Title state: two-letter code near "title" or "state".
+    m = _re.search(r"(?:title|state)[^\w]{0,15}\b([A-Z]{2})\b", text)
+    if m:
+        _add("title_state", m.group(1), m.group(0))
+    # Holder name: line after "holder" or "claimant".
+    m = _re.search(r"(?:holder|claimant|insured)[^\w]{0,15}([A-Z][a-z]+ [A-Z][a-z]+)", text)
+    if m:
+        _add("holder_name", m.group(1), m.group(0))
+    # Loss type: theft / fire / collision keywords.
+    for loss in ("theft", "fire", "collision"):
+        if _re.search(rf"\b{loss}\b", text, _re.I):
+            _add("loss_type", loss, loss)
+            break
+    # Lien declared: look for lien checkbox patterns.
+    if _re.search(r"lien.{0,30}yes", text, _re.I):
+        _add("lien_declared", True, "lien yes")
+    elif _re.search(r"lien.{0,30}no", text, _re.I):
+        _add("lien_declared", False, "lien no")
+    return fields
+
+
 def _doc_rank(doc: dict) -> int:
     base = doc["source"].split(".")[0]
     if base.startswith("customer_reply"):
@@ -195,6 +249,25 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
                        f"still below threshold: {still_missing or 'none'}")
         trace.append({"thought": thought, "action": action, "observation": observation})
         _emit_react(trace[-1], iteration)
+
+    # Deterministic fallback: if the LLM produced nothing at all (provider
+    # down, all calls failed), try regex extraction so the pipeline can
+    # continue. Confidence is capped at 0.7, so every field still routes
+    # to human verification — the fallback keeps the case moving, it does
+    # not silently approve low-quality extraction.
+    if not state:
+        fallback = _extract_deterministic(parsed_docs)
+        if fallback:
+            state.update(fallback)
+            trace.append({
+                "thought": "LLM extraction produced nothing — using deterministic regex fallback.",
+                "action": "extract_deterministic",
+                "observation": f"fallback extracted: {sorted(fallback.keys())} (confidence capped at 0.7)",
+            })
+            if data_dir:
+                from settleready.memory.events import emit
+                emit(data_dir, case_id, "extraction_fallback",
+                     {"fields": sorted(fallback.keys())})
 
     flags = [f for f in REQUIRED_FIELDS
              if f not in state or state[f]["confidence"] < CONFIDENCE_THRESHOLD]

@@ -33,6 +33,10 @@ def _stub_rag(monkeypatch):
 
 class FakeProvider:
     def complete(self, system, user, json_mode=False, max_tokens=0, temperature=0.0):
+        # Reviewer prompt -> return a valid approve verdict
+        if "review" in system.lower() or "verdict" in system.lower():
+            return json.dumps({"decision": "approve", "reason_codes": [],
+                               "note": "test approve"})
         return json.dumps({"fields": {
             f: {"value": "X", "confidence": 0.95, "span": "x"}
             for f in ["vin", "mileage", "title_state", "policy_number",
@@ -175,6 +179,9 @@ def test_reply_with_attachment_resolves_missing_doc(data_dir):
 
     class RichProvider(FakeProvider):
         def complete(self, system, user, json_mode=False, max_tokens=0, temperature=0.0):
+            if "review" in system.lower() or "verdict" in system.lower():
+                return json.dumps({"decision": "approve", "reason_codes": [],
+                                   "note": "test approve"})
             return json.dumps({"fields":
                                {f: {"value": v, "confidence": 0.95, "span": "x"}
                                 for f, v in vals.items()}})
@@ -220,6 +227,9 @@ def test_reply_text_confirmation_resolves_lien_conflict(data_dir):
 
     class StatementAwareProvider(FakeProvider):
         def complete(self, system, user, json_mode=False, max_tokens=0, temperature=0.0):
+            if "review" in system.lower() or "verdict" in system.lower():
+                return json.dumps({"decision": "approve", "reason_codes": [],
+                                   "note": "test approve"})
             fields = {f: {"value": v, "confidence": 0.95, "span": "x"}
                       for f, v in vals.items()}
             if "customer_reply" in user:  # customer confirmed the lien in words
