@@ -211,6 +211,27 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
         checks.append({"check": "valuation_data", "status": "pass",
                        "detail": f"{len(comps)} comparable listings available"})
 
+    # C3: enforce the 0.8 confidence threshold. Any required field below
+    # threshold fails verification — the case cannot pass with low-confidence
+    # extraction (including the deterministic regex fallback, capped at 0.7).
+    from settleready.agents.extraction import REQUIRED_FIELDS, CONFIDENCE_THRESHOLD
+    _low_conf = []
+    for f in REQUIRED_FIELDS:
+        entry = fields.get(f) or {}
+        conf = entry.get("confidence", 0.0)
+        try:
+            conf = float(conf)
+        except (TypeError, ValueError):
+            conf = 0.0
+        if conf < CONFIDENCE_THRESHOLD:
+            _low_conf.append(f)
+    if _low_conf:
+        checks.append({"check": "extraction_confidence", "status": "fail",
+                       "detail": f"Fields below confidence {CONFIDENCE_THRESHOLD}: "
+                                 f"{', '.join(_low_conf)}"})
+        flags.append("low_confidence_fields")
+        flags.extend(f"low_conf:{f}" for f in _low_conf)
+
     passed = not any(c["status"] in ("fail", "conflict") for c in checks)
     return {"case_id": case_id, "checks": checks, "conflicts": conflicts,
             "flags": flags, "passed": passed,

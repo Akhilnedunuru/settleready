@@ -27,7 +27,8 @@ from settleready.memory.blackboard import CaseBlackboard
 from settleready.memory.events import emit as _emit_event
 from settleready.tools.email_client import CASE_ID_RE, EmailRecord, get_email_client
 
-REWORK_STAGES = ("needs_info", "analyst_rework", "customer_question")  # waiting on the customer/analyst
+REWORK_STAGES = ("needs_info", "analyst_rework", "customer_question",
+                 "email_bounced", "email_send_failed")  # waiting on the customer/analyst
 
 
 def _ts() -> str:
@@ -164,20 +165,33 @@ class IntakeWatcher:
             for email in emails:
                 if email.id in seen:
                     continue
+                # H2: mark seen only AFTER successful processing. If the
+                # pipeline crashes (LLM down, missing PDFs), the email stays
+                # unseen and is retried on the next poll instead of being
+                # silently lost.
+                try:
+                    if is_bounce(email):
+                        actions.append(self._handle_bounce(email, bb))
+                    elif not is_claim_email(email):
+                        actions.append({"email": email.id, "action": "ignored",
+                                        "detail": f"no case ID in subject={email.subject!r}"})
+                    elif is_reply(email):
+                        actions.append(self._handle_reply(email, bb))
+                    else:
+                        actions.append(self._handle_new_claim(email))
+                except Exception as e:  # noqa: BLE001 — retry next poll
+                    actions.append({"email": email.id, "action": "failed_retry_next_poll",
+                                    "detail": str(e)[:200]})
+                    print(f"[{_ts()}] email {email.id} failed ({e}); will retry next poll",
+                          flush=True)
+                    continue
+                # H2: don't mark seen if the pipeline failed — the email
+                # retries on the next poll instead of being silently lost.
+                if actions[-1].get("action") == "pipeline_failed":
+                    print(f"[{_ts()}] email {email.id} pipeline failed; will retry next poll",
+                          flush=True)
+                    continue
                 self._mark_seen(email.id)
-                # Bounce handling: a delivery failure for a case email marks
-                # the case as email_bounced so a human can fix the address.
-                if is_bounce(email):
-                    actions.append(self._handle_bounce(email, bb))
-                    continue
-                if not is_claim_email(email):
-                    actions.append({"email": email.id, "action": "ignored",
-                                    "detail": f"no case ID in subject={email.subject!r}"})
-                    continue
-                if is_reply(email):
-                    actions.append(self._handle_reply(email, bb))
-                else:
-                    actions.append(self._handle_new_claim(email))
         finally:
             bb.close()
         return actions
@@ -208,10 +222,11 @@ class IntakeWatcher:
         if route_claim(email) != "total_loss" or not case_id:
             return {"email": email.id, "action": "routed_other",
                     "detail": f"subject={email.subject!r}"}
+        from settleready.guardrails import redact_pii as _redact2
         _emit_event(self._data_dir, case_id, "email_received",
                     {"from": email.from_, "subject": email.subject,
                      "attachments": len(email.attachments or []),
-                     "body": (email.body or "")[:400]})
+                     "body": _redact2(email.body or "")[:400]})
         # Remember who to ask when the analyst stage needs follow-up info.
         from settleready.memory.blackboard import CaseBlackboard
         _bb = CaseBlackboard(os.path.join(self._data_dir, "blackboard.db"))
@@ -219,14 +234,17 @@ class IntakeWatcher:
             _bb.write(case_id, "claimant_email", email.from_)
         finally:
             _bb.close()
-        # One automatic trigger per case ID — duplicate claim emails don't
-        # re-fire the pipeline (manual re-runs go through the Review tab).
+        # H1: a new-thread email (no "Re:") for an EXISTING case is a customer
+        # reply, not a duplicate claim. Route it to _handle_reply so
+        # attachments are saved and the pipeline re-runs. Only a truly new
+        # case ID triggers the claim pipeline.
         if case_id in self._load_state()["cases_triggered"]:
-            _emit_event(self._data_dir, case_id, "duplicate_skipped",
-                        {"email": email.id})
-            return {"email": email.id, "action": "duplicate_claim",
-                    "case_id": case_id,
-                    "detail": "pipeline already triggered for this case"}
+            from settleready.memory.blackboard import CaseBlackboard as _BB2
+            _bb2 = _BB2(os.path.join(self._data_dir, "blackboard.db"))
+            try:
+                return self._handle_reply(email, _bb2)
+            finally:
+                _bb2.close()
         # Real-world step: persist the email's attachments as the case's
         # documents before the pipeline runs. (The mock's demo emails carry no
         # attachments; their PDFs come from scripts/seed.sh.)

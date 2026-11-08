@@ -186,12 +186,17 @@ def test_watcher_saves_pdf_attachments(tmp_path):
 
 
 def test_duplicate_claim_email_does_not_refire(tmp_path):
+    """H1: a second email for the same case routes as a reply, not a
+    duplicate — the pipeline is NOT re-triggered automatically."""
     calls = []
     _mail(tmp_path)  # claim 1 for TL-2026-1045
     _mail(tmp_path)  # claim 2, same case (e.g. customer double-sent)
     w = _watcher(tmp_path, calls)
     actions = w.poll_once()
-    assert [a["action"] for a in actions] == ["pipeline_triggered", "duplicate_claim"]
+    # First email triggers the pipeline; second routes to _handle_reply
+    # (which finds no case in the blackboard here since run_fn is mocked).
+    assert actions[0]["action"] == "pipeline_triggered"
+    assert actions[1]["action"] == "reply_uncorrelated"
     assert calls == ["TL-2026-1045"]  # exactly one automatic trigger
 
 
@@ -204,6 +209,9 @@ def test_pipeline_failure_does_not_kill_daemon(tmp_path):
     actions = w.poll_once()
     assert actions[0]["action"] == "pipeline_failed"
     assert "LLM exploded" in actions[0]["detail"]
+    # H2: the failed email is NOT marked seen — a second poll retries it.
+    actions2 = w.poll_once()
+    assert actions2[0]["action"] == "pipeline_failed"
 
 
 def test_state_survives_restart(tmp_path):

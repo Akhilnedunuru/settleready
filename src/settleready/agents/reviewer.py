@@ -57,6 +57,25 @@ def submit_review(case_id: str, decision: str, reason_code: str | None = None,
     title_state = (fields.get("title_state") or {}).get("value") or case.get("title_state") or ""
 
     if decision == "approve":
+        # C2: validate the case is actually approvable. Approve only works
+        # from ready_for_review, with no unresolved conflicts and a computed ACV.
+        stage = case.get("stage", "")
+        if stage != "ready_for_review":
+            bb.close()
+            raise ValueError(
+                f"cannot approve case in stage '{stage}' — "
+                "only 'ready_for_review' cases can be approved")
+        conflicts = state.get("conflicts", [])
+        unresolved = [c for c in conflicts if c.get("status") == "unresolved"]
+        if unresolved:
+            bb.close()
+            raise ValueError(
+                f"cannot approve: {len(unresolved)} unresolved conflict(s) — "
+                f"{[c.get('reason_code') for c in unresolved]}")
+        acv = (state.get("acv") or {}).get("acv")
+        if acv is None:
+            bb.close()
+            raise ValueError("cannot approve: ACV has not been computed")
         bb.set_stage(case_id, "approved", event="reviewer_approved",
                      details={"note": note})
         bb.close()

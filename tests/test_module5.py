@@ -21,12 +21,27 @@ def _case_with_fields(tmp_path, case_id="C1", title_state="GA"):
         "title_state": {"value": title_state, "confidence": 0.9, "source": "title.pdf p.1"},
     })
     bb.write(case_id, "verification", {"checks": [], "conflicts": [], "flags": [], "passed": True})
+    bb.write(case_id, "acv", {"acv": 20000})
+    bb.set_stage(case_id, "ready_for_review")
     bb.close()
     ReturnTallyStore(os.path.join(dd, "tally.db")).close()
     return dd
 
 
 # -- reviewer ------------------------------------------------------------------
+def test_approve_blocked_when_not_ready(tmp_path):
+    """C2: approve raises unless the case is ready_for_review with ACV."""
+    import pytest
+    dd = str(tmp_path)
+    bb = CaseBlackboard(os.path.join(dd, "blackboard.db"))
+    bb.create_case("C2", loss_type="fire", title_state="GA")
+    bb.set_stage("C2", "needs_info")
+    bb.close()
+    ReturnTallyStore(os.path.join(dd, "tally.db")).close()
+    with pytest.raises(ValueError, match="cannot approve"):
+        submit_review("C2", "approve", note="too early", data_dir=dd)
+
+
 def test_approve(tmp_path):
     dd = _case_with_fields(tmp_path)
     out = submit_review("C1", "approve", note="looks good", data_dir=dd)

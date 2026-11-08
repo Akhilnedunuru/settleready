@@ -30,6 +30,12 @@ def _fields(spec, **over):
                           "source": "claim_form.pdf p.2"},
         "loss_type": {"value": spec["loss_type"], "confidence": 1.0,
                       "source": "claim_form.pdf p.1"},
+        "mileage": {"value": spec["vehicle"].get("mileage", 50000), "confidence": 1.0,
+                    "source": "claim_form.pdf p.1"},
+        "holder_name": {"value": spec["policy"]["holder"], "confidence": 1.0,
+                        "source": "claim_form.pdf p.1"},
+        "loss_date": {"value": spec["loss"]["date"], "confidence": 1.0,
+                      "source": "claim_form.pdf p.1"},
     }
     f.update(over)
     return f

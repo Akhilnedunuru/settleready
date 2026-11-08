@@ -133,8 +133,14 @@ def maybe_send_info_request(data_dir: str, case_id: str, needs: list[str],
         try:
             client.send(to=claimant, subject=subject, body=body)
         except Exception as e:  # noqa: BLE001 — a failed send must not fail the case
+            # H3: a failed send must be VISIBLE, not silent. Flag the case so
+            # a human can see it and retry — don't leave it in needs_info
+            # waiting for a reply to an email that never went out.
             _emit_event(data_dir, case_id, "email_failed",
                         {"to": claimant, "error": str(e)[:200]})
+            bb.set_stage(case_id, "email_send_failed", event="email_failed",
+                         details={"to": claimant, "error": str(e)[:200],
+                                  "needs": needs})
             return {"sent": False, "reason": f"send failed: {e}"}
         bb.write(case_id, "info_requested", sig)
         followups = (bb.read(case_id, "followup_count") or 0) + 1

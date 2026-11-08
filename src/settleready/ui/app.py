@@ -430,6 +430,36 @@ def tab_packet():
             _agent_flow_diagram(case_id)
     st.divider()
 
+    # -- Email bounce / send-failure recovery (correct address, re-send)
+    if packet["stage"] in ("email_bounced", "email_send_failed"):
+        with st.container(border=True):
+            st.markdown("**📧 Email delivery problem — correct the address**")
+            _bb2 = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
+            _current = _bb2.read(case_id, "claimant_email") or ""
+            _bb2.close()
+            st.info(f"Current claimant email: `{_current}` — "
+                    f"delivery {'bounced' if packet['stage'] == 'email_bounced' else 'failed'}.")
+            _new_email = st.text_input("Corrected claimant email",
+                                       value=_current,
+                                       key=f"fix_email_{case_id}")
+            if st.button("💾 Save corrected email & return to needs_info",
+                         key=f"fix_email_btn_{case_id}"):
+                if not _new_email.strip() or "@" not in _new_email:
+                    st.warning("Enter a valid email address.")
+                else:
+                    _bb3 = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
+                    _bb3.write(case_id, "claimant_email", _new_email.strip())
+                    # Clear the need-set dedupe so the info request re-sends.
+                    _bb3.write(case_id, "info_requested", None)
+                    _bb3.set_stage(case_id, "needs_info", event="email_corrected",
+                                   details={"old": _current, "new": _new_email.strip()})
+                    _bb3.close()
+                    st.success(f"Email updated to `{_new_email.strip()}` — "
+                               "case returned to needs_info. Re-run the pipeline "
+                               "to re-send the info request.")
+                    st.rerun()
+    st.divider()
+
     # -- Customer question reply (analyst answers, case returns to needs_info)
     if packet["stage"] == "customer_question":
         with st.container(border=True):
@@ -459,11 +489,12 @@ def tab_packet():
                         _client.send(to=_claimant,
                                      subject=f"Re: Your total-loss claim {case_id}",
                                      body=_reply.strip())
+                        from settleready.guardrails import redact_pii as _redact3
                         _bb.set_stage(case_id, "needs_info", event="analyst_reply",
-                                      details={"reply": _reply.strip()[:500]})
+                                      details={"reply": _redact3(_reply.strip())[:500]})
                         from settleready.memory.events import emit as _emit
                         _emit(DATA_DIR, case_id, "analyst_reply",
-                              {"reply": _reply.strip()[:500]})
+                              {"reply": _redact3(_reply.strip())[:500]})
                         st.success("Reply sent — case returned to needs_info.")
                         st.rerun()
                     except Exception as e:
@@ -622,11 +653,29 @@ def tab_review():
         return
 
     note = st.text_input("Reviewer note", "")
+    # C2: only show Approve when the case is actually approvable.
+    _approvable = packet["stage"] == "ready_for_review"
+    _unresolved = [c for c in packet.get("conflicts", [])
+                   if c.get("status") == "unresolved"]
+    _has_acv = (packet.get("acv") or {}).get("acv") is not None
+    if not _approvable:
+        st.info(f"Approve is available only when the case is `ready_for_review` "
+                f"(current stage: `{packet['stage']}`).")
+    elif _unresolved:
+        st.warning(f"Approve is blocked: {len(_unresolved)} unresolved conflict(s) — "
+                   f"{[c.get('reason_code') for c in _unresolved]}")
+    elif not _has_acv:
+        st.warning("Approve is blocked: ACV has not been computed.")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("✅ Approve", type="primary"):
+        if st.button("✅ Approve", type="primary", disabled=not (_approvable and not _unresolved and _has_acv)):
             with st.spinner("Recording approval…"):
-                out = submit_review(case_id, "approve", note=note, data_dir=DATA_DIR)
+                try:
+                    out = submit_review(case_id, "approve", note=note, data_dir=DATA_DIR)
+                except Exception as e:  # noqa: BLE001 — surface it in the UI
+                    _flash("error", f"Cannot approve: {e}")
+                    st.rerun()
+                    return
             _flash("success", f"Case approved → stage `{out['stage']}`")
             st.rerun()
     with col2:

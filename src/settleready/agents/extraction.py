@@ -232,11 +232,14 @@ def extract_fields(parsed_docs: list[dict], provider=None, case_id: str = "",
                 # statement surfaces as a visible conflict, never a silent pass.
                 if (prev is None or doc.get("override")
                         or (f not in overridden and conf > prev["confidence"])):
+                    # H5: redact PII from the span before storing — spans are
+                    # verbatim doc quotes and can contain SSNs/card numbers.
+                    from settleready.guardrails import redact_pii as _redact_span
                     state[f] = {
                         "value": val,
                         "confidence": round(min(conf, 1.0), 2),
                         "source": f"{doc['source']} p.{_page_of_span(doc, r.get('span', ''))}",
-                        "span": r.get("span", ""),
+                        "span": _redact_span(r.get("span", "")),
                     }
                     if doc.get("override"):
                         overridden.add(f)
