@@ -227,17 +227,14 @@ class IntakeWatcher:
                     {"from": email.from_, "subject": email.subject,
                      "attachments": len(email.attachments or []),
                      "body": _redact2(email.body or "")[:400]})
-        # Remember who to ask when the analyst stage needs follow-up info.
-        from settleready.memory.blackboard import CaseBlackboard
-        _bb = CaseBlackboard(os.path.join(self._data_dir, "blackboard.db"))
-        try:
-            _bb.write(case_id, "claimant_email", email.from_)
-        finally:
-            _bb.close()
         # H1: a new-thread email (no "Re:") for an EXISTING case is a customer
         # reply, not a duplicate claim. Route it to _handle_reply so
         # attachments are saved and the pipeline re-runs. Only a truly new
         # case ID triggers the claim pipeline.
+        # C1: do NOT overwrite the stored claimant email here. A spoofed
+        # new-thread email for an existing case would otherwise replace the
+        # real claimant address with the attacker's, and _handle_reply's
+        # sender check would then compare against the attacker's own address.
         if case_id in self._load_state()["cases_triggered"]:
             from settleready.memory.blackboard import CaseBlackboard as _BB2
             _bb2 = _BB2(os.path.join(self._data_dir, "blackboard.db"))
@@ -245,6 +242,14 @@ class IntakeWatcher:
                 return self._handle_reply(email, _bb2)
             finally:
                 _bb2.close()
+        # Remember who to ask when the analyst stage needs follow-up info.
+        # Only for a truly new case — see the C1 note above.
+        from settleready.memory.blackboard import CaseBlackboard
+        _bb = CaseBlackboard(os.path.join(self._data_dir, "blackboard.db"))
+        try:
+            _bb.write(case_id, "claimant_email", email.from_)
+        finally:
+            _bb.close()
         # Real-world step: persist the email's attachments as the case's
         # documents before the pipeline runs. (The mock's demo emails carry no
         # attachments; their PDFs come from scripts/seed.sh.)
@@ -328,6 +333,39 @@ class IntakeWatcher:
         if not case:
             return {"email": email.id, "action": "reply_uncorrelated",
                     "detail": f"subject={email.subject!r}"}
+        # C1: sender verification — a reply is accepted only from the stored
+        # claimant email. Checked BEFORE anything is logged, stored, or
+        # re-run, so a spoofed reply cannot inject statements or documents
+        # into a case by anyone who merely knows its case ID. The spoofed
+        # body is never stored; only the sender addresses are recorded,
+        # in the audit log and the event bus, so the attempt stays visible.
+        #
+        # Gated on SETTLEREADY_ENFORCE_SENDER_CHECK (default OFF): demos and
+        # testers reply from their own addresses, so enforcement would block
+        # legitimate test traffic. When off, the reply is accepted but a
+        # sender_unverified event is emitted, so the gap stays visible.
+        # Set SETTLEREADY_ENFORCE_SENDER_CHECK=1 in production.
+        import os as _os
+        _enforce = _os.environ.get("SETTLEREADY_ENFORCE_SENDER_CHECK", "").strip() == "1"
+        stored_sender = bb.read(case_id, "claimant_email")
+        sender = (email.from_ or "").strip().lower()
+        if stored_sender and _enforce:
+            if sender != str(stored_sender).strip().lower():
+                bb.log(case_id, case["stage"], "sender_mismatch",
+                       {"from": email.from_, "expected": stored_sender})
+                _emit_event(self._data_dir, case_id, "sender_mismatch",
+                            {"from": email.from_,
+                             "expected": stored_sender})
+                return {"email": email.id, "action": "reply_sender_mismatch",
+                        "case_id": case_id,
+                        "detail": f"reply from {email.from_!r} does not match "
+                                  f"stored claimant {stored_sender!r}"}
+        else:
+            # Enforcement off, or legacy/seeded cases never recorded a
+            # claimant email: accept as before, but leave an auditable trace
+            # instead of passing silently.
+            _emit_event(self._data_dir, case_id, "sender_unverified",
+                        {"from": email.from_, "enforced": _enforce})
         from settleready.guardrails import redact_pii as _redact
         bb.log(case_id, case["stage"], "customer_reply",
                {"from": email.from_, "body": _redact(email.body or "")[:500]})

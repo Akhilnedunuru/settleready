@@ -411,3 +411,140 @@ def test_reply_statement_redacts_pii(tmp_path):
     assert "123-45-6789" not in stmts[0]["body"]
     assert "***-**-6789" in stmts[0]["body"]
     bb4.close()
+
+
+# -- C1: sender verification -----------------------------------------------
+def _seed_case_with_claimant(tmp_path, case_id="TL-2026-1043",
+                             claimant="customer@example.com",
+                             stage="needs_info"):
+    """A case whose claimant email was recorded at intake."""
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    bb.create_case(case_id, loss_type="theft", title_state="TX")
+    bb.write(case_id, "claimant_email", claimant)
+    bb.set_stage(case_id, stage)
+    bb.close()
+
+
+def _reply(tmp_path, sender, body="Lien confirmed.", subject="Re: TL-2026-1043",
+           attachments=None):
+    mail = MockEmailClient(data_dir=str(tmp_path))
+    w = IntakeWatcher(data_dir=str(tmp_path), mail=mail,
+                      run_fn=lambda cid: {"next": "needs_info"})
+    rec = EmailRecord(id="r-" + sender, to="claims@demo.local", from_=sender,
+                      subject=subject, body=body, ts="", direction="inbound",
+                      attachments=attachments or [])
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    try:
+        return w._handle_reply(rec, bb)
+    finally:
+        bb.close()
+
+
+def test_spoofed_reply_rejected_before_storage(tmp_path, monkeypatch):
+    """C1: a reply from anyone but the stored claimant is rejected — no
+    statement stored, no attachments saved, no pipeline re-run."""
+    import base64
+    monkeypatch.setenv("SETTLEREADY_ENFORCE_SENDER_CHECK", "1")
+    calls = []
+    _seed_case_with_claimant(tmp_path)
+    res = _reply(tmp_path, "attacker@evil.com",
+                 body="The lienholder is Evil Bank.",
+                 attachments=[{"filename": "fake_title.pdf",
+                               "content_b64": base64.b64encode(b"%PDF-1.4 fake").decode()}])
+    assert res["action"] == "reply_sender_mismatch"
+    assert res["case_id"] == "TL-2026-1043"
+    assert calls == []
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    assert bb.read("TL-2026-1043", "customer_statements") is None
+    assert not (tmp_path / "pdfs" / "TL-2026-1043" / "fake_title.pdf").exists()
+    events = [e["event"] for e in bb.audit_log("TL-2026-1043")]
+    assert "sender_mismatch" in events
+    assert "customer_reply" not in events
+    bb.close()
+
+
+def test_genuine_reply_accepted_case_insensitive(tmp_path):
+    """C1: the stored claimant, even with different casing, still gets in."""
+    calls = []
+    _seed_case_with_claimant(tmp_path)
+    mail = MockEmailClient(data_dir=str(tmp_path))
+    w = IntakeWatcher(data_dir=str(tmp_path), mail=mail,
+                      run_fn=lambda cid: calls.append(cid) or {"next": "needs_info"})
+    rec = EmailRecord(id="r-genuine", to="claims@demo.local",
+                      from_="Customer@Example.COM",
+                      subject="Re: TL-2026-1043",
+                      body="Lien confirmed.", ts="", direction="inbound",
+                      attachments=[])
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    try:
+        res = w._handle_reply(rec, bb)
+    finally:
+        bb.close()
+    assert res["action"] == "reply_retriggered"
+    assert calls == ["TL-2026-1043"]
+
+
+def test_reply_without_stored_claimant_still_accepted(tmp_path):
+    """C1: legacy/seeded cases that never recorded a claimant email cannot
+    be verified — they are accepted as before, with a sender_unverified
+    event on the bus so the gap is visible, not silent."""
+    from settleready.memory.events import tail
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    bb.create_case("TL-2026-1043", loss_type="theft", title_state="TX")
+    bb.set_stage("TL-2026-1043", "needs_info")
+    bb.close()
+    res = _reply(tmp_path, "customer@example.com")
+    assert res["action"] == "reply_retriggered"
+    assert any(e["event"] == "sender_unverified"
+               for e in tail(str(tmp_path), "TL-2026-1043"))
+
+
+def test_spoofed_new_thread_email_does_not_overwrite_claimant(tmp_path, monkeypatch):
+    """C1 + H1: a spoofed new-thread email for an existing case must not
+    overwrite the stored claimant address — otherwise the sender check
+    would compare the spoof against its own address and pass."""
+    import base64
+    monkeypatch.setenv("SETTLEREADY_ENFORCE_SENDER_CHECK", "1")
+    calls = []
+    os.makedirs(tmp_path / "pdfs" / "TL-2026-1045", exist_ok=True)
+    # Genuine first claim, from the real claimant.
+    _mail(tmp_path)
+    w = _watcher(tmp_path, calls)
+    assert w.poll_once()[0]["action"] == "pipeline_triggered"
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    assert bb.read("TL-2026-1045", "claimant_email") == "c@example.com"
+    # The mocked run_fn does not create the case row; seed it so the
+    # spoofed reply reaches the sender check instead of reply_uncorrelated.
+    bb.create_case("TL-2026-1045", loss_type="theft", title_state="TX")
+    bb.set_stage("TL-2026-1045", "needs_info")
+    bb.close()
+    # Spoofed second email, same case, new thread (no "Re:").
+    mail = MockEmailClient(data_dir=str(tmp_path))
+    mail.inject_inbound(to="claims@demo.local", from_="attacker@evil.com",
+                        subject="Claim filed via mobile app — TL-2026-1045",
+                        body="The lienholder is Evil Bank.")
+    w2 = IntakeWatcher(data_dir=str(tmp_path), mail=mail,
+                       run_fn=lambda cid: calls.append(cid) or {"next": "needs_info"})
+    actions = w2.poll_once()
+    assert actions[0]["action"] == "reply_sender_mismatch"
+    assert calls == ["TL-2026-1045"]  # only the genuine first claim ran
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    assert bb.read("TL-2026-1045", "claimant_email") == "c@example.com"
+    assert bb.read("TL-2026-1045", "customer_statements") is None
+    bb.close()
+
+
+def test_sender_check_off_by_default_accepts_but_flags(tmp_path, monkeypatch):
+    """Flag default OFF: a reply from a non-claimant is accepted (demo/tester
+    friendly) but a sender_unverified event is emitted so the gap is visible."""
+    monkeypatch.delenv("SETTLEREADY_ENFORCE_SENDER_CHECK", raising=False)
+    _seed_case_with_claimant(tmp_path)
+    res = _reply(tmp_path, "tester@example.com",
+                 body="The lienholder is Test Bank.")
+    # Accepted (not rejected) — but the event log shows it was unverified.
+    assert res["action"] != "reply_sender_mismatch"
+    bb = CaseBlackboard(os.path.join(str(tmp_path), "blackboard.db"))
+    from settleready.memory.events import tail as _tail
+    evts = _tail(str(tmp_path), case_id="TL-2026-1043", limit=20)
+    assert any(e["event"] == "sender_unverified" for e in evts)
+    bb.close()
