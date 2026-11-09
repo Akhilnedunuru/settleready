@@ -1,186 +1,239 @@
 # SettleReady
 
-**Autonomous total-loss case-preparation agent** — capstone project (Personal Assistant track).
+**Autonomous total-loss case-preparation agent.**
 
-Insurance total-loss claims (stolen, fire-destroyed, or irreparably damaged vehicles) always route
-to analysts: title checks, lien verification, actual-cash-value computation, and state-specific
-total-loss thresholds, assembled into a case file for senior-analyst review. Done manually across
-emails, PDFs, and database portals, it is slow and error-prone. SettleReady automates the
-preparation pipeline — it never finalizes a case without human approval.
+When a vehicle is stolen, burned, or damaged beyond repair, the claim always routes to an analyst: check the title, verify the lienholder, confirm the claims history, research the state's total-loss law, compute the actual cash value, and assemble a case file for a senior analyst to review. Done manually across emails, PDFs, and database portals, that work is slow and error-prone. SettleReady automates the preparation — it never finalizes a case on its own. A human always makes the final call.
 
-## How it works (7 stages)
+## The problem
 
-1. **Intake** — claim email + attachments arrive; router sends total-loss claims into the pipeline
-2. **Extract** — parse PDFs (OCR fallback); LLM pulls fields with confidence scores + source spans
-3. **Completeness check** — required-document checklist; gaps → drafted customer email → re-ingest loop
-4. **Verify** — parallel mock lookups: title DB, lienholder, CLUE, valuation comps; conflicts resolved
-5. **Knowledge (RAG)** — retrieve *this state's* total-loss law (jurisdiction filter before vector search), cited
-6. **Compute & assemble** — deterministic ACV math + LLM-assembled cited packet
-7. **Human review** — senior analyst approves → settlement-ready, or returns with reason codes → rework loop
+Total-loss preparation is a chain of lookups and cross-checks, and every link can fail quietly:
 
-Cross-cutting: **Case Blackboard** (persistent case memory), **return tally table** (learning without
-retraining), append-only **audit log**, PII redaction, pluggable LLM provider.
-Full detail: [`docs/architecture.md`](docs/architecture.md).
+- A lien the claimant didn't declare changes the settlement entirely.
+- A title brand (salvage, flood) the form doesn't mention invalidates the valuation.
+- A confidently wrong field — a mistyped VIN, a low-confidence extraction — looks right until someone pays on it.
+- A customer reply from the wrong address, or a follow-up email that bounced, can strand a case with no one noticing.
 
-### Disposition Planner (Checkpoint 4.1 ToT)
+SettleReady is built around one idea: **every step is checked by a different mechanism, and no single failure reaches the customer.** Extraction is verified against registries. Plans are scored by a critic before they're sent. The reviewer is checked by a human. And when any layer can't do its job — the model is down, confidence is low, the budget is spent — the case goes to a human instead of failing silently.
 
-Between verification and routing, non-clean cases (verification failed) go through a
-Tree-of-Thought **Disposition Planner** (`src/settleready/agents/disposition.py`) instead of the
-old fixed conflict→ask mapping. It runs a beam search (width 3, depth 3) over email
-groupings: a **generator** proposes candidate emails, a **critic** scores each against a
-fixed rubric (coverage, budget efficiency, actor correctness, grounding), and a
-**controller** keeps the top 3 plans per level. The selected plan routes the case to
-`needs_info` (one combined email — e.g. lien question + title request together, instead of
-burning two follow-ups), `analyst_rework` (analyst-internal gaps like no comparables, which
-are never emailed to the customer), or `escalated` (budget exhausted or no plan passes).
-Clean cases bypass it entirely and pay nothing extra.
+## Architecture
 
-Multi-agent, scoped to this one stage: generator, critic, and controller are separate
-roles that communicate only through structured plan states and scores — never free-form
-dialogue — so the decision stays reproducible in the audit log. Implementation uses
-**LangGraph** for the graph and its generator and critic nodes, all calling the existing
-provider interface (no second API key path); the Case Blackboard is the state manager
-(the 4.1 design's MCP role, with a standalone MCP server deferred). No provider, an LLM failure, or a missing LangGraph
-install all fall back to deterministic generation + heuristic scoring, and any planner
-failure falls back to the old mapping — the planner can never break the pipeline.
+```
+Claim email + PDFs
+      │
+      ▼
+┌─────────────┐
+│   Intake    │  Route by case ID; classify replies (info vs. question);
+│             │  verify the sender; save attachments (PDF/images, ≤10 MB)
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│   Extract   │  ReAct loop over the documents; LLM pulls 8 required fields
+│             │  with confidence scores + source spans. If the LLM is down,
+│             │  a regex fallback extracts what it can (capped at 0.7).
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│   Verify    │  Deterministic fan-out: title registry, lienholder registry,
+│             │  CLUE claims history, valuation comparables. Mismatches are
+│             │  preserved as structured conflicts — both values, both
+│             │  sources — never silently resolved. Fields below 0.8
+│             │  confidence fail verification.
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│  Research   │  State total-loss law via retrieval, with a jurisdiction
+│             │  filter applied before vector search. Every answer is
+│             │  citation-checked against the retrieved passages.
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│  Disposition│  For non-clean cases, a beam search plans the customer
+│  Planner    │  follow-up: a generator proposes email groupings, a critic
+│             │  scores each against a fixed rubric, the controller keeps
+│             │  the best plan. One combined email beats two single asks.
+│             │  Clean cases skip this entirely.
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│   Outreach  │  Sends the info-request email (max 3 follow-ups, deduped by
+│             │  need-set). Bounces and send failures flag the case for a
+│             │  human instead of leaving it waiting.
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│   Reviewer  │  Deterministic vetoes first, then one LLM first-pass. If the
+│             │  model fails or returns an invalid verdict, the case
+│             │  escalates — it never approves by default.
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│ Human review│  Senior analyst approves (only from ready_for_review, with
+│             │  no unresolved conflicts and a computed ACV) or returns
+│             │  with a reason code (max 2 returns, then escalation).
+└─────────────┘
+```
 
-## Quickstart
+**Supporting systems**
+
+- **Case Blackboard** — per-case memory: fields, checks, conflicts, decisions, all with evidence. Append-only audit log.
+- **Return tally** — episodic memory. At 3 returns with the same state and reason, that check is promoted to a mandatory upfront verification, rendered first in the next report.
+- **Guardrails** — PII redaction before storage (SSNs, card numbers, dates of birth), prompt-injection blocking on inbound text, confidence and schema checks on outbound extraction, sender verification on replies.
+- **Observability** — per-run traces with timing and token/cost metering, structured JSON logs, guardrail decisions, and an aggregate metrics dashboard (total runs, failure rate, cost).
+- **Deterministic ACV** — money math never goes through the LLM: mean of comparables − $150 per full 10k miles over 50k − condition adjustment (fair −$300, poor −$800).
+
+**Tech stack:** Python 3.11 · LangGraph (multi-agent orchestration + disposition planner) · GPT-4o-mini via a pluggable provider interface · Chroma (local vector store) · pdfplumber / pypdf / Tesseract OCR · Pydantic · Streamlit UI · SQLite (Case Blackboard + audit log).
+
+## Setup
 
 ```bash
 git clone https://github.com/Akhilnedunuru/settleready.git
 cd settleready
 
 bash scripts/setup.sh          # checks Python 3.11, creates venv, installs deps
-cp .env.example .env        # paste your OPENAI_API_KEY (LangSmith key optional)
-
-.venv/bin/python scripts/smoke_test.py  # verifies LLM + embeddings work (~$0.01)
+cp .env.example .env           # paste your OPENAI_API_KEY
 ```
 
-Two ways to populate the app — pick one:
+Only `OPENAI_API_KEY` is required. Everything else has sane defaults. Set a $10/month cap in the OpenAI dashboard — a full pipeline run costs roughly $0.02–0.06.
 
-**A. Fresh start (real-world flow).** Only the environment is generated (statute
-corpus + mock title/lien/CLUE/valuation records). The app boots empty; cases are
-created by the intake watcher as claim emails arrive.
+### Data setup
+
+All case data is **synthetic** — no real customer PII, ever. External systems (title DB, lienholder registry, CLUE, valuation, email) are mocked behind interfaces, so swapping a mock for a real connector is configuration, not a rewrite.
+
+Two ways to populate the app:
+
+**A. Seeded demo (recommended first run).** Loads deterministic synthetic cases with ground truth, a seeded inbox email, and seeded return-tally history.
+
+```bash
+bash scripts/demo_reset.sh 15   # wipe state, load 15 synthetic cases, rebuild the RAG index
+```
+
+**B. Fresh start (real-world flow).** Only the environment is generated (statute corpus + mock registry records). The app boots empty; cases are created by the intake watcher as claim emails arrive.
 
 ```bash
 bash scripts/fresh.sh            # environment only, no demo fixtures
 bash scripts/build_index.sh      # builds the local Chroma RAG index
-bash scripts/start.sh            # single terminal: watcher daemon + Streamlit UI (Ctrl-C stops both)
-# then send a claim email (subject contains the case ID, claim PDFs attached)
 ```
-(Or run the two processes in separate terminals: `python -m settleready.agents.intake watch`
-and `streamlit run src/settleready/ui/app.py`.)
 
-**B. Seeded demo (eval + scripted walkthrough).** Loads 3 deterministic synthetic
-cases with ground truth, a seeded inbox email, and seeded return-tally history.
+The individual steps, if you want them separately:
 
 ```bash
-bash scripts/seed.sh             # generates synthetic fixtures (deterministic)
-bash scripts/build_index.sh      # builds the local Chroma RAG index
-
-export PYTHONPATH="$PWD/src"
-.venv/bin/python -m settleready.pipeline --case-id TL-2026-1044   # full pipeline, one case
-.venv/bin/python -m settleready.eval.metrics                     # scores vs. fixture ground truth
-streamlit run src/settleready/ui/app.py   # analyst workbench
+bash scripts/seed.sh [N]         # generate N synthetic cases (default 3)
+bash scripts/build_index.sh      # build the Chroma RAG index from the statute corpus
+bash scripts/gen_customer_docs.sh  # pre-generate the documents a customer would send back
 ```
-(`bash scripts/fresh.sh` wipes back to the empty state at any time.)
 
-## Real-world email intake (no "Run" button)
+## Usage
 
-The intake watcher polls the inbox and fires the pipeline automatically when a
-claim email arrives. The mock JSON inbox is the default; set
-`SETTLEREADY_EMAIL_SOURCE=gmail` (+ `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` in
-`.env`) to process real emails via IMAP/SMTP — free, stdlib only, no new
-dependencies. Either way the agents only ever see the `EmailClient` protocol.
-
-### Shared demo mailbox for clones (relay)
-
-A clone that can run the watcher can read any secret shipped to its machine,
-so the Gmail app password must never reach a clone at all. Instead, the
-operator runs a relay server that alone holds the password, and clones talk
-to it over HTTP with a demo token:
+### Start the app
 
 ```bash
-# operator machine (once): create relay.env — never committed — with
-#   GMAIL_ADDRESS, GMAIL_APP_PASSWORD, RELAY_TOKEN
-# then run, behind HTTPS (e.g. Caddy + DuckDNS):
-bash scripts/relay_server.sh --port 8899
+bash scripts/start.sh
 ```
 
-```bash
-# clone's .env — no Gmail password here, ever:
-SETTLEREADY_EMAIL_SOURCE=relay
-RELAY_URL=https://your-relay-host:8899
-RELAY_TOKEN=public-demo-token
-```
+This starts two processes in one terminal: the **intake watcher** (polls the inbox, fires the pipeline when a claim email arrives) and the **Streamlit UI** (the analyst workbench). Ctrl-C stops both. To stop them separately: `bash scripts/stop.sh`.
 
-The token is published on purpose: it is a kill-switch (rotate it and old
-clones stop working), not a secret. Abuse is bounded by rate limits
-(60 inbox reads / 10 sends per hour per IP) and a rule that sends must carry
-a case ID in the subject. See `src/settleready/tools/relay_server.py` for the
-full security model.
+Or run the pieces individually:
 
 ```bash
 export PYTHONPATH="$PWD/src"
-# terminal 1: the daemon (polls every 15s)
-.venv/bin/python -m settleready.agents.intake watch
-# terminal 2: simulate a claim email arriving (demo transport)
+.venv/bin/python -m settleready.agents.intake watch   # watcher daemon
+streamlit run src/settleready/ui/app.py               # UI only
+.venv/bin/python -m settleready.pipeline --case-id TL-2026-1044  # one case, CLI
+```
+
+### The UI — five tabs
+
+- **Case packet** — the prepared case: extracted fields, verification report, legal research, ACV worksheet, agent-flow diagram, and run activity. If the case is waiting on a customer question, reply from here. If an email bounced or failed to send, correct the claimant address here.
+- **Review** — senior analyst decision: approve (only when the case is `ready_for_review` with no unresolved conflicts and a computed ACV) or return with a reason code. Also re-runs the pipeline.
+- **Emails** — every inbound and outbound email for the case, grouped oldest-first, with attachment status.
+- **Audit** — the append-only event log: every stage transition, tool call, guardrail decision, and return, with timestamps.
+- **Observability** — per-run traces (timing, tokens, cost), structured logs, guardrail decisions, and aggregate metrics across all cases.
+
+### Email intake
+
+The watcher polls the inbox and fires the pipeline automatically — there is no "Run" button. The mock JSON inbox is the default. Set `SETTLEREADY_EMAIL_SOURCE=gmail` (+ `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` in `.env`) to process real emails via IMAP/SMTP.
+
+**Email contract:** the subject must contain the case ID (`TL-2026-1045`). Customer replies must start with `Re:` and carry the case ID so they're correlated to the open case. A reply from an address other than the stored claimant email is rejected when sender verification is on (see below). PDF and image attachments are saved to `data/pdfs/<case_id>/` before the pipeline runs.
+
+To simulate a claim email arriving (demo transport):
+
+```bash
 .venv/bin/python -m settleready.agents.intake demo-claim --case-id TL-2026-1045
-# single poll (no daemon)
-.venv/bin/python -m settleready.agents.intake once
+.venv/bin/python -m settleready.agents.intake once   # single poll, no daemon
 ```
 
-Email contract: the subject must contain the case ID (`TL-2026-1045`); customer
-replies must start with `Re:` and carry the case ID so they're correlated to the
-open case. PDF attachments are saved to `data/pdfs/<case_id>/` before the
-pipeline runs.
+### The demo cases
+
+| Case | Scenario | Expected outcome |
+|---|---|---|
+| TL-2026-1043 | TX theft, undeclared lien + missing title | `needs_info` — the kitchen-sink non-clean case |
+| TL-2026-1044 | GA fire, clean | `ready_for_review` — the happy path |
+| TL-2026-1045 | TX collision, lien declared + matching | `ready_for_review` (a warning still passes) |
+| TL-2026-1046+ | Generated, cycling 4 archetypes | clean · undeclared lien · missing title · lienholder mismatch |
+
+### Budgets and limits
+
+These are hard caps, not suggestions — when one is exhausted, the case escalates to a human:
+
+- **3** customer follow-ups (deduped by need-set, so re-asking the same thing doesn't burn budget)
+- **2** analyst returns
+- **2** AI-reviewer returns
+- **0.8** confidence threshold — any required field below it fails verification
+- **10 MB** per attachment; supported types: PDF, PNG, JPG, JPEG, TIFF, BMP
+
+### Sender verification (optional)
+
+By default, sender verification is **off** so anyone can test the reply flow from their own email. Every reply still emits a `sender_unverified` event in the audit log. To enforce it — a reply is accepted only from the stored claimant email, and anything else is rejected before anything is stored — set in `.env`:
+
+```
+SETTLEREADY_ENFORCE_SENDER_CHECK=1
+```
+
+### Evaluation
+
+```bash
+.venv/bin/python -m settleready.eval.metrics   # scores pipeline output vs. fixture ground truth
+bash scripts/run_evals.sh                     # full eval suite (metrics + LLM-judge + adversarial)
+```
+
+The adversarial eval covers 8 hostile scenarios (spoofed replies, prompt injection, conflicting documents, missing data) where the correct behavior is safe failure, not a confident answer.
 
 ## Repository layout
 
 ```
-scripts/          one-command setup, seeding, indexing, smoke test
+scripts/          one-command setup, seeding, indexing, smoke test, start/stop
 src/settleready/
   llm/            provider interface (OpenAI live, Ollama stub — swap via config)
-  agents/         the four 5.1 agents (ingestion, grounding, outreach, reviewer),
-                the 4.1 ToT disposition planner, and graph.py — the LangGraph
-                multi-agent orchestration (with a plain-loop fallback)
+  agents/         ingestion, grounding, disposition planner, outreach, reviewer,
+                  and graph.py — the LangGraph multi-agent orchestration
+                  (with a plain-loop fallback if LangGraph is unavailable)
   tools/          email client, PDF parser, mock DBs, RAG retriever, ACV calculator
-  memory/         Case Blackboard, return tally store
-  data/           fixture generator (synthetic PDFs + mock records, seeded)
-  eval/           metrics + labeled fixtures (module 5)
-  ui/             Streamlit demo + review screen
-  pipeline.py     wires every module together (final integration)
-notebooks/        per-module exploration before productionizing
-tests/            interface + regression tests
-docs/             architecture, checkpoint writeups
-data/             generated at runtime (gitignored): fixtures, chroma index, inbox/outbox
+  memory/         Case Blackboard, return tally store, event bus
+  data/           fixture generator (synthetic PDFs + mock records)
+  eval/           metrics, LLM-judge, adversarial scenarios
+  obs/            tracing, structured logging, cost metering
+  guardrails/     input/output screening, PII redaction
+  ui/             Streamlit analyst workbench
+  pipeline.py     wires every module together
+tests/            167 tests (interface + regression)
+docs/             architecture deep-dive
+data/             generated at runtime (gitignored): fixtures, Chroma index, inbox/outbox
 ```
-
-## Course module → code map
-
-| Checkpoint | Build | Lives in |
-|---|---|---|
-| 1 · Concept | scaffold, fixture generator | `scripts/`, `src/settleready/data/` |
-| 2 · Reasoning / memory / tools | ReAct loop, tool interfaces, Blackboard | `src/settleready/llm/`, `tools/`, `memory/` |
-| 3 · Retrieval / RAG | statute corpus + state-filtered retriever | `src/settleready/tools/rag.py`, `data/` |
-| 4 · Multi-agent | ToT Disposition Planner (LangGraph nodes + graph) + review loop | `src/settleready/agents/disposition.py`, `pipeline.py` |
-| 4.1 · ToT integration | beam-search disposition planner for non-clean cases (generator/critic/controller as LangGraph nodes; Case Blackboard as state manager) | `src/settleready/agents/disposition.py` |
-| 5 · Eval / guardrails | eval harness, PII redaction, audit log, UI | `src/settleready/eval/`, `ui/` |
-| 5.1 · Multi-agent architecture | four agents (ingestion, grounding, outreach, reviewer) on one LangGraph StateGraph: sequential backbone, conditional branches, iterative review loop, blackboard communication | `src/settleready/agents/graph.py`, `src/settleready/agents/reviewer.py` (`ai_review_case`) |
 
 ## Environment variables
 
-See `.env.example`. Only `OPENAI_API_KEY` is required. Everything else has sane defaults;
-set `SETTLEREADY_PROVIDER=ollama` to use a local model once the Ollama provider is implemented.
+See `.env.example`. Only `OPENAI_API_KEY` is required. Notable options:
 
-## Cost
-
-A full pipeline run on GPT-4o-mini costs roughly **$0.02–0.06** (includes the
-reviewer agent's single first-pass call, which runs only on clean cases). Set a $10/month cap in the
-OpenAI dashboard and you'll never think about it again.
+| Variable | Default | What it does |
+|---|---|---|
+| `SETTLEREADY_PROVIDER` | `openai` | `openai` or `ollama` (local model, stub) |
+| `SETTLEREADY_CHAT_MODEL` | `gpt-4o-mini` | Chat model for extraction, planning, review |
+| `SETTLEREADY_EMBED_MODEL` | `text-embedding-3-small` | Embedding model for the statute index |
+| `SETTLEREADY_EMAIL_SOURCE` | `mock` | `mock` or `gmail` |
+| `SETTLEREADY_ENFORCE_SENDER_CHECK` | unset (off) | Set to `1` to reject replies from non-claimant addresses |
+| `SETTLEREADY_LOG_LEVEL` | `INFO` | Structured log verbosity |
+| `LANGSMITH_API_KEY` | unset | Optional LangSmith tracing |
 
 ## Data & privacy
 
-All case data in this repo is **synthetic**. No real customer PII, ever — per program rules.
-External systems (title DB, lienholder, CLUE, valuation, email) are mocked behind interfaces;
-swapping a mock for a real connector is configuration, not a rewrite.
+All case data in this repo is **synthetic**. No real customer PII, ever. PII shapes (SSNs, card numbers, dates of birth) are redacted before storage, and the audit log never contains raw values.
