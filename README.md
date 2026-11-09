@@ -189,6 +189,23 @@ By default, sender verification is **off** so anyone can test the reply flow fro
 SETTLEREADY_ENFORCE_SENDER_CHECK=1
 ```
 
+### LangSmith tracing (optional)
+
+The project already has built-in observability — the Observability tab shows per-run traces, token/cost, structured logs, and guardrail decisions without any extra setup. LangSmith is an optional add-on: a hosted dashboard from the LangChain team that shows the same agent runs as a visual trace tree (every Thought → Action → Observation step, with timing and token usage per node). Useful for debugging a tricky run or showing the agent's reasoning in a demo.
+
+It's free for individual use. To enable it:
+
+1. Create an account at [smith.langchain.com](https://smith.langchain.com) and copy your API key.
+2. Add these to `.env`:
+
+```
+LANGSMITH_API_KEY=lsv2_pt_your-key-here
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=settleready
+```
+
+Both the key **and** `LANGCHAIN_TRACING_V2=true` are required — the key alone does nothing. Traces appear in the LangSmith dashboard under the `settleready` project. Remove or unset the key to turn it off; nothing in the project depends on it.
+
 ### Evaluation
 
 ```bash
@@ -232,7 +249,7 @@ See `.env.example`. Only `OPENAI_API_KEY` is required. Notable options:
 | `SETTLEREADY_EMAIL_SOURCE` | `mock` | `mock` or `gmail` |
 | `SETTLEREADY_ENFORCE_SENDER_CHECK` | unset (off) | Set to `1` to reject replies from non-claimant addresses |
 | `SETTLEREADY_LOG_LEVEL` | `INFO` | Structured log verbosity |
-| `LANGSMITH_API_KEY` | unset | Optional LangSmith tracing |
+| `LANGSMITH_API_KEY` | unset | Optional hosted tracing dashboard (see LangSmith section above); also needs `LANGCHAIN_TRACING_V2=true` |
 
 ## Data & privacy
 
