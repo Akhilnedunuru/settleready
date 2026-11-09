@@ -17,6 +17,8 @@ SettleReady is built around one idea: **every step is checked by a different mec
 
 ## Architecture
 
+Full detail — flowchart, component glossary, traced example, and design decisions — in [`docs/architecture.md`](docs/architecture.md).
+
 ```
 Claim email + PDFs
       │
