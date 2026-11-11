@@ -742,6 +742,24 @@ def tab_observability():
     st.caption("Module 6 — traces, token/cost, structured logs, and guardrail "
                "decisions for this case. Refreshes every 2s.")
 
+    # -- Suspicion score (Lab 6.2, lightweight) ----------------------------
+    with st.container(border=True):
+        st.markdown("**🔍 Suspicion score — this case**")
+        from settleready.obs.suspicion import compute_suspicion
+        _susp = compute_suspicion(case_id, DATA_DIR)
+        _level_emoji = {"escalate": "🔴", "flag": "🟡", "routine": "🟢"}[_susp["level"]]
+        st.metric("Score (0–100)",
+                  f"{_level_emoji} {_susp['score']} — {_susp['level']}")
+        if _susp["signals"]:
+            _rows = [{"signal": s["signal"], "weight": s["weight"],
+                      "detail": s.get("detail", "") or s["description"]}
+                     for s in _susp["signals"]]
+            st.dataframe(_rows, width="stretch")
+        else:
+            st.caption("No suspicion signals — clean case.")
+        st.caption("Escalate ≥ 80 · Flag ≥ 50 · Routine < 50. "
+                   "Aggregates existing guardrail, verification, and event signals.")
+
     # -- Aggregate metrics (all cases) -------------------------------------
     with st.container(border=True):
         st.markdown("**📊 Aggregate metrics — all cases**")

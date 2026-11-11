@@ -127,6 +127,15 @@ def maybe_send_info_request(data_dir: str, case_id: str, needs: list[str],
                         {"reason": "already asked for this"})
             return {"sent": False, "reason": "already asked for this"}
         subject, body = compose_info_request(case_id, holder_name, needs)
+        # Overconfidence check on the customer-facing email body (Lab 6.1 B.2).
+        # BLOCK (>= 0.5) swaps in the hedged version before sending; FLAG is logged.
+        from settleready.guardrails.output import check_overconfidence as _oc
+        _oc_v = _oc(body)
+        _emit_event(data_dir, case_id, "guardrail",
+                    {"layer": "output", "name": _oc_v.name,
+                     "action": _oc_v.action, "detail": _oc_v.detail})
+        if _oc_v.action == "block":
+            body = _oc_v.extras.get("hedged") or body
         if client is None:
             from settleready.tools.email_client import get_email_client
             client = get_email_client(data_dir=data_dir)

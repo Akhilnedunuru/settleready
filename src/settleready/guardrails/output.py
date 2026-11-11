@@ -115,6 +115,63 @@ def check_outreach_asks(needs: list[str], approved_asks: set[str]) -> Verdict:
     return Verdict.make_pass("outreach_asks")
 
 
+# Overconfidence markers (Lab 6.1 B.2): absolute language asserting certainty
+# beyond what the evidence supports. Each maps to a hedged replacement.
+_OVERCONFIDENCE_MARKERS = {
+    r"\bproven\b": "supported by the available evidence",
+    r"\bguaranteed\b": "expected, subject to verification",
+    r"\balways\b": "typically",
+    r"\bnever\b": "rarely",
+    r"\bcertainly\b": "likely",
+    r"\bdefinitely\b": "probably",
+    r"\bwithout doubt\b": "on the available evidence",
+    r"\b100%\b": "with high confidence",
+    r"\babsolutely\b": "very likely",
+    r"\bimpossible\b": "unlikely",
+}
+_OVERCONFIDENCE_RES = [(re.compile(pat, re.IGNORECASE), repl)
+                       for pat, repl in _OVERCONFIDENCE_MARKERS.items()]
+
+
+def check_overconfidence(text: str) -> Verdict:
+    """Flag absolute language in LLM-synthesized text (Lab 6.1 B.2).
+
+    Scores the fraction of sentences containing at least one overconfidence
+    marker. PASS < 0.3, FLAG (warn) 0.3–0.5, BLOCK ≥ 0.5. The verdict carries
+    a hedged version of the text with markers replaced by softer wording.
+    """
+    if not text or not text.strip():
+        return Verdict.make_pass("overconfidence")
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip())
+                 if s.strip()]
+    if not sentences:
+        return Verdict.make_pass("overconfidence")
+    flagged = []
+    for s in sentences:
+        if any(pat.search(s) for pat, _ in _OVERCONFIDENCE_RES):
+            flagged.append(s[:80])
+    score = len(flagged) / len(sentences)
+    hedged = text
+    for pat, repl in _OVERCONFIDENCE_RES:
+        hedged = pat.sub(repl, hedged)
+    detail = (f"Overconfidence score {score:.2f} "
+              f"({len(flagged)}/{len(sentences)} sentences contain "
+              f"absolute language)")
+    if score >= 0.5:
+        return Verdict.blocked("overconfidence", detail,
+                               score=round(score, 2),
+                               flagged=flagged,
+                               hedged=hedged)
+    if score >= 0.3:
+        return Verdict.flagged("overconfidence", detail,
+                               score=round(score, 2),
+                               flagged=flagged,
+                               hedged=hedged)
+    return Verdict(name="overconfidence", ok=True, action="pass",
+                   detail=detail,
+                   extras={"score": round(score, 2), "hedged": hedged})
+
+
 def screen_output(kind: str, payload: dict) -> list[Verdict]:
     """Dispatch to the right output checks by kind.
 
@@ -126,11 +183,14 @@ def screen_output(kind: str, payload: dict) -> list[Verdict]:
     if kind == "legal":
         return [check_citations(payload.get("answer", ""),
                                 payload.get("citations", []),
-                                payload.get("retrieved_ids", []))]
+                                payload.get("retrieved_ids", [])),
+                check_overconfidence(payload.get("answer", ""))]
     if kind == "outreach":
         return [check_outreach_asks(payload.get("needs", []),
-                                    payload.get("approved_asks", set()))]
+                                    payload.get("approved_asks", set())),
+                check_overconfidence(payload.get("body", ""))]
     if kind == "llm_text":
         return [check_no_llm_money(payload.get("text", ""),
-                                   payload.get("context", "llm_output"))]
+                                   payload.get("context", "llm_output")),
+                check_overconfidence(payload.get("text", ""))]
     return [Verdict.make_pass("unknown_kind", f"No checks for kind={kind}")]

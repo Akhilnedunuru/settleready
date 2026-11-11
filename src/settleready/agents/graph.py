@@ -197,6 +197,23 @@ def node_ground(state: dict, ctx: dict) -> dict:
         legal = research("What is the total loss threshold and valuation method?",
                          title_state, data_dir=data_dir, provider=provider,
                          case_id=case_id)
+        # Overconfidence check on the synthesized legal answer (Lab 6.1 B.2):
+        # absolute language in a legal summary is a hallucination precursor.
+        # BLOCK (>= 0.5) replaces the answer with its hedged version and
+        # flags it; FLAG (0.3-0.5) is logged for the reviewer to see.
+        from settleready.guardrails.output import screen_output as _screen_out
+        _answer = legal.get("answer", "") if isinstance(legal, dict) else ""
+        _cites = legal.get("citations", []) if isinstance(legal, dict) else []
+        _retrieved = legal.get("retrieved_ids", []) if isinstance(legal, dict) else []
+        for _v in _screen_out("legal", {"answer": _answer, "citations": _cites,
+                                        "retrieved_ids": _retrieved}):
+            _emit_event(data_dir, case_id, "guardrail",
+                        {"layer": "output", "name": _v.name,
+                         "action": _v.action, "detail": _v.detail})
+            if _v.action == "block" and _v.name == "overconfidence":
+                _hedged = _v.extras.get("hedged") or _answer
+                legal["answer"] = _hedged
+                legal["overconfidence_hedged"] = True
         bb.write(case_id, "legal_research", legal)
         _emit_event(data_dir, case_id, "legal_research",
                     {"citations": legal["citations"]})

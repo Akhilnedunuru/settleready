@@ -101,3 +101,37 @@ def test_redact_pii_masks_dob():
     out = redact_pii("DOB: 01/15/1990")
     assert "01/15/1990" not in out
     assert "[DOB REDACTED]" in out
+
+
+def test_overconfidence_pass_on_calibrated_text():
+    from settleready.guardrails.output import check_overconfidence
+    v = check_overconfidence(
+        "The statute suggests the threshold is 75% of ACV. "
+        "The comparable listings indicate a value near $18,000.")
+    assert v.action == "pass"
+
+
+def test_overconfidence_flag_on_moderate_absolute_language():
+    from settleready.guardrails.output import check_overconfidence
+    text = ("This is proven. The value is guaranteed. "
+            "The lienholder is definitely Capital Auto Finance. "
+            "The title is clean.")
+    v = check_overconfidence(text)
+    # 3/4 sentences contain markers -> 0.75 -> BLOCK
+    assert v.action == "block"
+    assert "proven" not in v.extras["hedged"]
+    assert "supported by the available evidence" in v.extras["hedged"]
+
+
+def test_overconfidence_warn_in_middle_band():
+    from settleready.guardrails.output import check_overconfidence
+    text = ("The threshold is met. This is proven. "
+            "The comparables support the value. The title is clean. "
+            "The lien is confirmed.")
+    v = check_overconfidence(text)
+    # 1/5 sentences -> 0.2 -> pass; use 2/5 for warn
+    text2 = ("This is proven. The value is guaranteed. "
+             "The comparables support the value. The title is clean. "
+             "The lien is confirmed.")
+    v2 = check_overconfidence(text2)
+    assert v2.action == "flag"  # 2/5 = 0.4
