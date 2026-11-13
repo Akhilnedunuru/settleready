@@ -40,6 +40,9 @@ _CUSTOMER_ASKS = {
     "WRONG_STATE_LAW": (
         "the loss appears to fall under a different state's rules than the "
         "title state — please confirm where the vehicle is titled"),
+    "TITLE_STATE_MISMATCH": (
+        "the title state on the claim does not match the title record "
+        "({detail}) — please confirm where the vehicle is titled"),
     # WEAK_COMPS is analyst-internal (widen the comparable search), not
     # something the customer can answer — no email for it.
 }

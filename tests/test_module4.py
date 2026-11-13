@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import settleready.tools.rag as ragmod
 from settleready.agents.researcher import research
-from settleready.tools.acv import ADJUSTMENTS, compute_acv
+from settleready.tools.acv import ADJUSTMENTS, compute_acv, validate_acv_record
 
 
 # -- ACV: deterministic money math ----------------------------------------------
@@ -51,6 +51,30 @@ def test_acv_rejects_empty_comps():
         raise AssertionError("expected ValueError for empty comparables")
 
 
+def test_acv_validation_recomputes_stored_record():
+    comps = [{"price": p} for p in [18000, 18200, 18600, 18400, 18800, 18400]]
+    acv, worksheet = compute_acv(comparables=comps, mileage=92000)
+    record = {"acv": acv, "worksheet": worksheet, "comparables": comps}
+    out = validate_acv_record(record, expected_mileage=92000)
+    assert out["passed"] is True
+    assert out["expected_acv"] == 17800
+
+
+def test_acv_validation_fails_closed_on_tampering_or_missing_comps():
+    comps = [{"price": 20000}]
+    acv, worksheet = compute_acv(comparables=comps, mileage=30000)
+    tampered = {"acv": acv + 100, "worksheet": worksheet, "comparables": comps}
+    assert validate_acv_record(tampered)["passed"] is False
+    missing = {"acv": acv, "worksheet": worksheet}
+    out = validate_acv_record(missing)
+    assert out["passed"] is False
+    assert "not retained" in out["reason"]
+    wrong_mileage = {"acv": acv, "worksheet": worksheet, "comparables": comps}
+    out = validate_acv_record(wrong_mileage, expected_mileage=31000)
+    assert out["passed"] is False
+    assert "mileage" in out["reason"]
+
+
 # -- RAG: retrieval contract -------------------------------------------------------
 class FakeCollection:
     """Stands in for Chroma; asserts the where-clause contract."""
@@ -66,7 +90,13 @@ class FakeCollection:
                 "VALUATION METHOD: ACV from comparable vehicles of like kind and quality."]
         docs = docs[:n_results]
         return {"documents": [docs],
-                "metadatas": [[{"state": "TX", "source": "TX.md"}] * len(docs)],
+                "metadatas": [[{"state": "TX", "source": "TX.md",
+                                 "jurisdiction": "TX",
+                                 "statute_version": "2026.1",
+                                 "statute_status": "current",
+                                 "effective_from": "2025-01-01",
+                                 "effective_to": "",
+                                 "reviewed_at": "2026-11-01"}] * len(docs)],
                 "distances": [[0.1, 0.25][:len(docs)]]}
 
 
@@ -91,6 +121,8 @@ def test_retrieve_applies_state_filter_before_ranking(monkeypatch):
     assert all(r["state"] == "TX" for r in out)
     assert out[0]["citation"] == "TX.md"
     assert out[0]["score"] == 0.1
+    assert out[0]["statute_status"] == "current"
+    assert out[0]["effective_from"] == "2025-01-01"
 
 
 def test_researcher_returns_cited_answer(monkeypatch):
@@ -101,6 +133,8 @@ def test_researcher_returns_cited_answer(monkeypatch):
     assert out["state"] == "TX"
     assert "TX.md" in out["citations"]
     assert out["answer"]
+    assert out["provenance_check"]["passed"] is True
+    assert out["statute_provenance"][0]["statute_version"] == "2026.1"
 
 
 def test_researcher_empty_retrieval_says_so(monkeypatch):
@@ -124,6 +158,21 @@ def test_chunk_markdown():
     assert len(chunks) == 2
     assert all(len(c) > 40 for c in chunks)
     assert not any("SYNTHETIC DOCUMENT" in c for c in chunks)
+
+
+def test_statute_provenance_front_matter_is_parsed_not_chunked():
+    text = ("---\njurisdiction: TX\nstatute_version: 2026.1\n"
+            "statute_status: current\neffective_from: 2025-01-01\n"
+            "effective_to: \nreviewed_at: 2026-11-01\n---\n\n"
+            "# Texas — Total Loss\n\n## TOTAL LOSS THRESHOLD\n\n"
+            "In Texas, a vehicle is a total loss when repairs plus salvage reach 100% of ACV.")
+    provenance, body = ragmod._parse_provenance(text)
+    assert provenance["jurisdiction"] == "TX"
+    assert provenance["statute_status"] == "current"
+    assert provenance["effective_to"] == ""
+    chunks = ragmod._chunk_markdown(text)
+    assert len(chunks) == 1
+    assert "statute_version" not in chunks[0]
 
 
 # -- Retrieval A/B demo (checkpoint 3.1): baseline vs grounded ----------------------

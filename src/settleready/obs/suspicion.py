@@ -72,7 +72,7 @@ def compute_suspicion(case_id: str, data_dir: str) -> dict:
             high_stakes = [c for c in unresolved
                            if c.get("reason_code") in
                            ("UNDECLARED_LIEN", "LIENHOLDER_MISMATCH",
-                            "TITLE_BRAND_PRESENT")]
+                            "TITLE_STATE_MISMATCH", "TITLE_BRAND_PRESENT")]
             if high_stakes:
                 _add("high_stakes_conflict",
                      f"{[c.get('reason_code') for c in high_stakes]}")

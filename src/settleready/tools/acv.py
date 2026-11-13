@@ -67,6 +67,71 @@ def compute_acv(*, comparables: list[dict], mileage: int,
     return acv, worksheet
 
 
+def validate_acv_record(record: dict, *, expected_mileage=None) -> dict:
+    """Deterministically validate a stored ACV record by recomputation.
+
+    The Grounding Agent owns both calculation and validation. Calculation
+    produces the record; this validator independently recomputes the value
+    from the retained comparable prices and compares the stored ACV,
+    worksheet total, worksheet inputs, worksheet steps, and — when supplied —
+    the extracted vehicle mileage. A record without retained comparables
+    cannot be validated and therefore fails closed.
+
+    Returns {"passed": bool, "reason": str, "expected_acv": int | None}.
+    """
+    def fail(reason: str, expected=None) -> dict:
+        return {"passed": False, "reason": reason, "expected_acv": expected}
+
+    if not isinstance(record, dict):
+        return fail("ACV record is not a dict")
+    comparables = record.get("comparables")
+    if not isinstance(comparables, list) or not comparables:
+        return fail("ACV comparables were not retained for validation")
+    for comp in comparables:
+        if not isinstance(comp, dict):
+            return fail("ACV comparable is not a dict")
+        price = comp.get("price")
+        if isinstance(price, bool) or not isinstance(price, (int, float)):
+            return fail("ACV comparable has no numeric price")
+
+    worksheet = record.get("worksheet")
+    if not isinstance(worksheet, dict):
+        return fail("ACV worksheet is missing")
+    inputs = worksheet.get("inputs")
+    if not isinstance(inputs, dict):
+        return fail("ACV worksheet inputs are missing")
+
+    mileage = inputs.get("mileage")
+    if isinstance(mileage, bool) or not isinstance(mileage, int):
+        return fail("ACV worksheet mileage is not an integer")
+    if expected_mileage is not None and mileage != expected_mileage:
+        return fail(
+            f"ACV worksheet mileage {mileage} does not match extracted "
+            f"mileage {expected_mileage}")
+    if inputs.get("n_comparables") != len(comparables):
+        return fail("ACV worksheet comparable count does not match the "
+                    "retained comparables")
+    condition = inputs.get("condition")
+    if condition not in _VALID_CONDITIONS:
+        return fail(f"ACV worksheet condition is invalid: {condition!r}")
+
+    expected_acv, expected_worksheet = compute_acv(
+        comparables=comparables, mileage=mileage, condition=condition)
+    if record.get("acv") != expected_acv:
+        return fail(
+            f"Stored ACV {record.get('acv')} does not match recomputed "
+            f"ACV {expected_acv}", expected_acv)
+    if worksheet.get("acv") != expected_acv:
+        return fail("ACV worksheet total does not match recomputation",
+                    expected_acv)
+    if worksheet.get("steps") != expected_worksheet["steps"]:
+        return fail("ACV worksheet steps do not match recomputation",
+                    expected_acv)
+    return {"passed": True, "reason": "ACV recomputation matches the "
+                                      "stored worksheet",
+            "expected_acv": expected_acv}
+
+
 if __name__ == "__main__":
     import argparse
     import json as _json

@@ -107,8 +107,28 @@ def verify_case(case_id: str, fields: dict, docs_present: list[str],
         flags.append("title_lookup_failed")
     else:
         brands = title.get("brands") or []
-        checks.append({"check": "title_lookup", "status": "pass",
-                       "detail": f"{title.get('state')} title; brands: {brands or 'none'}"})
+        registry_state = str(title.get("state") or "").upper()
+        submitted_state = str(title_state or "").upper()
+        if registry_state and submitted_state and registry_state != submitted_state:
+            conflicts.append(_conflict(
+                "TITLE_STATE_MISMATCH", "title_state",
+                (f"Claim documents give title state {submitted_state}; "
+                 f"title registry gives {registry_state}"),
+                submitted={"value": submitted_state,
+                           "source": _src(fields, "title_state")},
+                authoritative={"value": registry_state,
+                               "source": "state title registry"},
+                resolution=("Neither state is silently substituted: the "
+                            "submitted state is preserved, the registry state "
+                            "is recorded, and legal research cannot be treated "
+                            "as jurisdictionally reliable until an analyst "
+                            "verifies the correct title state.")))
+            checks.append({"check": "title_lookup", "status": "conflict",
+                           "detail": conflicts[-1]["detail"]})
+            flags.append("title_state_mismatch")
+        else:
+            checks.append({"check": "title_lookup", "status": "pass",
+                           "detail": f"{title.get('state')} title; brands: {brands or 'none'}"})
         if brands:
             flags.append("title_brand_present")
 

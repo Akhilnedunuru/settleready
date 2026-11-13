@@ -810,6 +810,19 @@ STATUTES = {
 }
 
 
+STATUTE_PROVENANCE = {
+    state: {
+        "jurisdiction": state,
+        "statute_version": "2026.1",
+        "statute_status": "current",
+        "effective_from": "2025-01-01",
+        "effective_to": "",
+        "reviewed_at": "2026-11-01",
+    }
+    for state in ("TX", "GA", "CA")
+}
+
+
 def _write(path: str, obj) -> None:
     with open(path, "w") as f:
         json.dump(obj, f, indent=2)
@@ -861,6 +874,11 @@ def main(seed: int = 42, out: str = "data", env_only: bool = False,
 
     for st, (title, body) in STATUTES.items():
         with open(os.path.join(out, "statutes", f"{st}.md"), "w") as f:
+            provenance = STATUTE_PROVENANCE[st]
+            f.write("---\n")
+            for key, value in provenance.items():
+                f.write(f"{key}: {value}\n")
+            f.write("---\n\n")
             f.write(f"# {BANNER}\n\n# {title}\n\n{body}\n")
 
     if env_only:

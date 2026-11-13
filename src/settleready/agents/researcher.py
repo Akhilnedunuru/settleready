@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 
 from settleready.memory.events import emit as _emit_event
 from settleready.tools.rag import retrieve
@@ -44,6 +45,78 @@ def _figures(answer: str) -> list[str]:
                 seen.add(norm)
                 out.append(norm)
     return out
+
+
+_PROVENANCE_REQUIRED = ("jurisdiction", "statute_version", "statute_status",
+                        "effective_from", "reviewed_at")
+_PROVENANCE_KEYS = (*_PROVENANCE_REQUIRED, "effective_to")
+
+
+def _parse_iso_date(value) -> date | None:
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def verify_statute_provenance(chunks: list[dict],
+                              as_of_date: str | None = None) -> tuple[bool, str, list[dict]]:
+    """Verify jurisdiction and currency metadata for retrieved statutes.
+
+    Jurisdiction was already enforced by the retriever's pre-ranking state
+    filter; this deterministic gate checks that the retrieved chunks also
+    carry provenance, identify the same jurisdiction, are marked current,
+    and were legally effective on `as_of_date` (the loss date when the graph
+    supplies one; otherwise today). Missing or stale provenance fails closed:
+    an unprovenanced statute is not treated as current law.
+
+    Returns (passed, reason, provenance_summaries).
+    """
+    if not chunks:
+        return False, "no retrieved statute chunks", []
+    as_of = _parse_iso_date(as_of_date) if as_of_date else date.today()
+    if as_of is None:
+        return False, f"invalid as-of date {as_of_date!r}", []
+
+    summaries: dict[str, dict] = {}
+    for chunk in chunks:
+        citation = chunk.get("citation") or "<unknown>"
+        missing = [key for key in _PROVENANCE_KEYS if key not in chunk]
+        missing.extend(key for key in _PROVENANCE_REQUIRED
+                       if key in chunk and not str(chunk.get(key)).strip())
+        if missing:
+            return False, (f"{citation} is missing statute provenance: "
+                           f"{sorted(set(missing))}"), []
+        jurisdiction = str(chunk.get("jurisdiction")).upper()
+        state = str(chunk.get("state") or "").upper()
+        if state and jurisdiction != state:
+            return False, (f"{citation} jurisdiction {jurisdiction} does not "
+                           f"match retrieved state {state}"), []
+        if str(chunk.get("statute_status")).lower() != "current":
+            return False, (f"{citation} statute status is "
+                           f"{chunk.get('statute_status')!r}, not 'current'"), []
+        effective_from = _parse_iso_date(chunk.get("effective_from"))
+        effective_to_raw = str(chunk.get("effective_to") or "").strip()
+        effective_to = (_parse_iso_date(effective_to_raw)
+                        if effective_to_raw else None)
+        reviewed_at = _parse_iso_date(chunk.get("reviewed_at"))
+        if effective_from is None or reviewed_at is None or (
+                effective_to_raw and effective_to is None):
+            return False, f"{citation} has invalid statute provenance dates", []
+        if as_of < effective_from or (effective_to is not None and as_of > effective_to):
+            return False, (f"{citation} was not effective on {as_of.isoformat()} "
+                           f"(effective {effective_from.isoformat()} to "
+                           f"{effective_to.isoformat() if effective_to else 'present'})"), []
+        summaries[citation] = {
+            "citation": citation,
+            "jurisdiction": jurisdiction,
+            "statute_version": chunk.get("statute_version"),
+            "statute_status": chunk.get("statute_status"),
+            "effective_from": chunk.get("effective_from"),
+            "effective_to": chunk.get("effective_to"),
+            "reviewed_at": chunk.get("reviewed_at"),
+        }
+    return True, "", list(summaries.values())
 
 
 def verify_citations(answer: str, citations: list[str],
@@ -87,15 +160,19 @@ Respond with ONLY valid JSON: {"answer": "...", "cited_sources": ["TX.md", ...]}
 
 def research(question: str, title_state: str, data_dir: str = "data",
              provider=None, k: int = 3, case_id: str = "",
-             persist_dir: str | None = None) -> dict:
+             persist_dir: str | None = None,
+             as_of_date: str | None = None) -> dict:
     """Research a question against the title state's statutes.
 
     Returns {"question", "state", "answer", "citations": [...], "chunks": [...],
-    "citation_check": {"passed": bool, "reason": str}}.
+    "citation_check": {"passed": bool, "reason": str},
+    "provenance_check": {"passed": bool, "reason": str},
+    "statute_provenance": [...]}.
     Tool calls (vector retrieval, synthesis) are emitted to the event bus so
     the UI can show them live. persist_dir overrides the Chroma index path
     (default <data_dir>/chroma) — used by eval harnesses that run against an
-    isolated world but the real index.
+    isolated world but the real index. as_of_date is the legal applicability
+    date (normally the loss date); it defaults to today.
     """
     if provider is None:
         from settleready.llm.provider import get_provider
@@ -110,7 +187,28 @@ def research(question: str, title_state: str, data_dir: str = "data",
                  "result": f"{len(chunks)} chunk(s) retrieved"})
     if not chunks:
         return {"question": question, "state": title_state.upper(),
-                "answer": _DECLINE, "citations": [], "chunks": []}
+                "answer": _DECLINE, "citations": [], "chunks": [],
+                "provenance_check": {"passed": False,
+                                     "reason": "no retrieved statute chunks"},
+                "statute_provenance": []}
+
+    provenance_ok, provenance_reason, provenance = verify_statute_provenance(
+        chunks, as_of_date=as_of_date)
+    _emit_event(data_dir, case_id, "statute_provenance_check",
+                {"passed": provenance_ok, "reason": provenance_reason,
+                 "as_of_date": as_of_date,
+                 "statutes": provenance})
+    if not provenance_ok:
+        # Currency/jurisdiction provenance is a hard gate, not a warning: an
+        # unprovenanced or non-effective statute never reaches synthesis.
+        return {"question": question, "state": title_state.upper(),
+                "answer": _DECLINE, "citations": [], "chunks": chunks,
+                "citation_check": {"passed": False,
+                                   "reason": (f"statute provenance check failed: "
+                                              f"{provenance_reason}")},
+                "provenance_check": {"passed": False,
+                                     "reason": provenance_reason},
+                "statute_provenance": provenance}
 
     context = "\n\n".join(f"[{c['citation']}] {c['text']}" for c in chunks)
     user = f"Question: {question}\n\nRetrieved excerpts (state: {title_state.upper()}):\n{context}"
@@ -136,10 +234,14 @@ def research(question: str, title_state: str, data_dir: str = "data",
         # the analyst can see what the model saw.
         return {"question": question, "state": title_state.upper(),
                 "answer": _DECLINE, "citations": [], "chunks": chunks,
-                "citation_check": {"passed": False, "reason": reason}}
+                "citation_check": {"passed": False, "reason": reason},
+                "provenance_check": {"passed": True, "reason": ""},
+                "statute_provenance": provenance}
     return {"question": question, "state": title_state.upper(),
             "answer": answer, "citations": citations, "chunks": chunks,
-            "citation_check": {"passed": True, "reason": ""}}
+            "citation_check": {"passed": True, "reason": ""},
+            "provenance_check": {"passed": True, "reason": ""},
+            "statute_provenance": provenance}
 
 
 if __name__ == "__main__":

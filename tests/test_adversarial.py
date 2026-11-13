@@ -15,7 +15,13 @@ class StubCollection:
                     "VALUATION METHOD: Fair retail value from at least 5 "
                     "comparable listings."]
             return {"documents": [docs[:n_results]],
-                    "metadatas": [[{"state": "GA", "source": "GA.md"}] * len(docs[:n_results])],
+                    "metadatas": [[{"state": "GA", "source": "GA.md",
+                                     "jurisdiction": "GA",
+                                     "statute_version": "2026.1",
+                                     "statute_status": "current",
+                                     "effective_from": "2025-01-01",
+                                     "effective_to": "",
+                                     "reviewed_at": "2026-11-01"}] * len(docs[:n_results])],
                     "distances": [[0.1, 0.2][:n_results]]}
         return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
 

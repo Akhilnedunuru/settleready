@@ -42,7 +42,7 @@ from settleready.agents.reviewer import ai_review_case
 from settleready.agents.verification import verify_case
 from settleready.memory.blackboard import CaseBlackboard
 from settleready.memory.events import emit as _emit_event
-from settleready.tools.acv import compute_acv
+from settleready.tools.acv import compute_acv, validate_acv_record
 from settleready.tools.mock_dbs import MockValuationService
 from settleready.tools.pdf_parser import parse_document
 
@@ -196,7 +196,8 @@ def node_ground(state: dict, ctx: dict) -> dict:
                             {"from": "policy_number", "state": title_state})
         legal = research("What is the total loss threshold and valuation method?",
                          title_state, data_dir=data_dir, provider=provider,
-                         case_id=case_id)
+                         case_id=case_id,
+                         as_of_date=(fields.get("loss_date") or {}).get("value") or None)
         # Overconfidence check on the synthesized legal answer (Lab 6.1 B.2):
         # absolute language in a legal summary is a hallucination precursor.
         # BLOCK (>= 0.5) replaces the answer with its hedged version and
@@ -232,7 +233,10 @@ def node_ground(state: dict, ctx: dict) -> dict:
             f"research: {title_state} threshold answered with citations "
             f"{legal['citations']}")
 
-        # -- compute: deterministic ACV (money math never via LLM) -----------
+        # -- compute + validate: deterministic ACV (money math never via LLM) --
+        # The Grounding Agent owns both operations. The comparable prices are
+        # retained in the ACV record so the Reviewer can independently
+        # recompute the worksheet later instead of trusting the stored total.
         compute_row = bb.set_stage(case_id, "compute")
         comps = MockValuationService(data_dir).comparables(case_id)
         mileage = (fields.get("mileage") or {}).get("value") or 0
@@ -241,10 +245,32 @@ def node_ground(state: dict, ctx: dict) -> dict:
                     {"tool": "acv.compute_acv",
                      "args": {"comparables": len(comps), "mileage": mileage},
                      "result": f"ACV=${acv:,}"})
-        bb.write(case_id, "acv", {"acv": acv, "worksheet": worksheet})
+        acv_record = {"acv": acv, "worksheet": worksheet,
+                      "comparables": comps}
+        validation = validate_acv_record(acv_record, expected_mileage=mileage)
+        acv_record["validation"] = validation
+        bb.write(case_id, "acv", acv_record)
+        _emit_event(data_dir, case_id, "acv_validation",
+                    {"passed": validation["passed"],
+                     "reason": validation["reason"]})
         bb.set_audit_details(compute_row, {
             "acv": acv, "comparables": len(comps), "mileage": mileage})
         summaries.append(f"compute: ACV=${acv:,} ({worksheet['formula']})")
+        summaries.append(
+            f"acv validation: passed={validation['passed']} "
+            f"({validation['reason']})")
+        if not validation["passed"]:
+            report = {
+                **report,
+                "passed": False,
+                "checks": [*report.get("checks", []),
+                           {"check": "acv_validation", "status": "fail",
+                            "detail": validation["reason"]}],
+                "flags": [*report.get("flags", []), "acv_validation_failed"],
+            }
+            bb.write(case_id, "verification", report)
+            return {"summaries": summaries, "grounding_passed": False,
+                    "report": report}
         return {"summaries": summaries, "grounding_passed": True,
                 "report": report}
     finally:

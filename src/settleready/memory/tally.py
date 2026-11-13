@@ -50,6 +50,10 @@ REASON_TO_CHECK = {
                    "Pull valuation comparables with a wider radius first"),
     "MISSING_TITLE_DOC": ("request_title_upfront",
                           "Request the title document in the first customer email"),
+    "TITLE_STATE_MISMATCH": ("verify_title_state_first",
+                             "Verify the submitted title state against the title registry first"),
+    "ACV_VALIDATION_FAILED": ("recompute_acv_first",
+                              "Recompute ACV from the retained comparables before review"),
 }
 
 

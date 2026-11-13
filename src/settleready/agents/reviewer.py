@@ -25,6 +25,8 @@ REASON_CODES = {
     "MISSING_TITLE_DOC": ("title_document", "Title document missing or unreadable"),
     "LOW_CONFIDENCE_FIELDS": ("extraction", "Key fields below confidence threshold"),
     "WRONG_STATE_LAW": ("legal_research", "Wrong state's law cited"),
+    "TITLE_STATE_MISMATCH": ("title_state", "Submitted title state differs from the title registry — verify jurisdiction"),
+    "ACV_VALIDATION_FAILED": ("acv_validation", "ACV worksheet failed deterministic recomputation — recompute from retained comparables"),
     "REVIEWER_LLM_UNAVAILABLE": ("reviewer", "AI reviewer LLM unavailable — human review required"),
 }
 
@@ -152,7 +154,8 @@ for THIS state, with citations?
 fields? Anything arithmetically off or internally contradictory?
 
 Reason codes (use only these): UNDECLARED_LIEN, LIENHOLDER_MISMATCH, \
-WEAK_COMPS, MISSING_TITLE_DOC, LOW_CONFIDENCE_FIELDS, WRONG_STATE_LAW.
+WEAK_COMPS, MISSING_TITLE_DOC, LOW_CONFIDENCE_FIELDS, WRONG_STATE_LAW, \
+TITLE_STATE_MISMATCH, ACV_VALIDATION_FAILED.
 
 Reply with JSON only:
 {"decision": "approve" | "return", "reason_codes": ["..."], "note": "..."}
@@ -232,6 +235,18 @@ def _deterministic_vetoes(packet: dict) -> dict | None:
         return {"reason_codes": ["WRONG_STATE_LAW"],
                 "note": "Deterministic veto: legal research declined — "
                         "no cited legal basis for this state's total-loss rule."}
+    acv_record = packet.get("acv") or {}
+    if acv_record:
+        from settleready.tools.acv import validate_acv_record
+        fields = packet.get("fields") or {}
+        mileage = (fields.get("mileage") or {}).get("value")
+        validation = validate_acv_record(
+            acv_record,
+            expected_mileage=mileage if isinstance(mileage, int) else None)
+        if not validation["passed"]:
+            return {"reason_codes": ["ACV_VALIDATION_FAILED"],
+                    "note": ("Deterministic veto: ACV validation failed — "
+                             f"{validation['reason']}")}
     return None
 
 

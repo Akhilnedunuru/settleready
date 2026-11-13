@@ -28,7 +28,10 @@ def _stub_rag(monkeypatch):
         R, "retrieve",
         lambda state, question, persist_dir="", k=3, provider=None:
         [{"text": "synthetic statute", "citation": f"{state}.md",
-          "state": state, "score": 0.1}])
+          "state": state, "score": 0.1,
+          "jurisdiction": state, "statute_version": "2026.1",
+          "statute_status": "current", "effective_from": "2025-01-01",
+          "effective_to": "", "reviewed_at": "2026-11-01"}])
 
 
 class FakeProvider:

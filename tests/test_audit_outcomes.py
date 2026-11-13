@@ -74,14 +74,27 @@ def _run(tmp_path, monkeypatch, report):
                                          "citation_check": {"passed": True,
                                                             "reason": ""}})
     monkeypatch.setattr(graph, "compute_acv",
-                        lambda **k: (22300, {"formula": "f"}))
+                        lambda **k: (22300, {
+                            "formula": "f", "acv": 22300,
+                            "steps": [
+                                {"name": "comparables_mean",
+                                 "detail": "mean of 6 comparables",
+                                 "amount": 22300},
+                                {"name": "mileage_adjustment",
+                                 "detail": "0 x $150 per 10k miles over 50k "
+                                           "(odometer 41,000)",
+                                 "amount": 0},
+                                {"name": "condition_adjustment",
+                                 "detail": "condition=good", "amount": 0}],
+                            "inputs": {"n_comparables": 6, "mileage": 41000,
+                                       "condition": "good"}}))
 
     class _Val:
         def __init__(self, data_dir):
             pass
 
         def comparables(self, case_id):
-            return [{}, {}, {}, {}, {}, {}]
+            return [{"price": 22300} for _ in range(6)]
 
     monkeypatch.setattr(graph, "MockValuationService", _Val)
     return pipeline.run_case(case_id, data_dir=dd, provider=_ApproveProvider())

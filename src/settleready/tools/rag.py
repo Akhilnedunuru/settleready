@@ -30,8 +30,35 @@ class _ProviderEmbeddings:
         return f"settleready-{self._provider.name}"
 
 
+def _parse_provenance(text: str) -> tuple[dict, str]:
+    """Parse the optional YAML-style statute provenance front matter.
+
+    Returns (metadata, body). Provenance is deliberately separate from the
+    statute text: jurisdiction, version, currency status, effective interval,
+    and corpus review date are machine-checked by the researcher, not left
+    for the LLM to infer from prose.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    except StopIteration:
+        return {}, text
+    metadata = {}
+    for line in lines[1:end]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        aliases = {"version": "statute_version", "status": "statute_status"}
+        metadata[aliases.get(key, key)] = value.strip()
+    return metadata, "\n".join(lines[end + 1:])
+
+
 def _chunk_markdown(text: str) -> list[str]:
-    """Split on headings/blank lines; drop the synthetic banner line."""
+    """Split on headings/blank lines; drop provenance and the synthetic banner."""
+    _provenance, text = _parse_provenance(text)
     chunks, buf = [], []
     for line in text.splitlines():
         s = line.strip()
@@ -79,13 +106,25 @@ def build_index(corpus_dir: str, persist_dir: str, provider=None) -> int:
     for path in files:
         state = os.path.splitext(os.path.basename(path))[0]  # TX.md -> TX
         with open(path) as f:
-            chunks = _chunk_markdown(f.read())
+            raw_text = f.read()
+        provenance, body = _parse_provenance(raw_text)
+        chunks = _chunk_markdown(body)
         print(f"[build_index] embedding {len(chunks)} chunks from "
               f"{os.path.basename(path)} ...", flush=True)
+        base_metadata = {
+            "state": state,
+            "source": os.path.basename(path),
+            "jurisdiction": provenance.get("jurisdiction", ""),
+            "statute_version": provenance.get("statute_version", ""),
+            "statute_status": provenance.get("statute_status", ""),
+            "effective_from": provenance.get("effective_from", ""),
+            "effective_to": provenance.get("effective_to", ""),
+            "reviewed_at": provenance.get("reviewed_at", ""),
+        }
         collection.add(
             ids=[f"{state}-{i}" for i in range(len(chunks))],
             documents=chunks,
-            metadatas=[{"state": state, "source": os.path.basename(path)} for _ in chunks],
+            metadatas=[dict(base_metadata) for _ in chunks],
         )
         n += len(chunks)
         print(f"[build_index] indexed {n} chunks so far", flush=True)
@@ -110,8 +149,15 @@ def retrieve(state: str, question: str, persist_dir: str = "data/chroma",
     )
     out = []
     for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
-        out.append({"text": doc, "citation": meta["source"],
-                    "state": meta["state"], "score": round(float(dist), 4)})
+        meta = meta or {}
+        out.append({"text": doc, "citation": meta.get("source", ""),
+                    "state": meta.get("state", ""), "score": round(float(dist), 4),
+                    "jurisdiction": meta.get("jurisdiction", ""),
+                    "statute_version": meta.get("statute_version", ""),
+                    "statute_status": meta.get("statute_status", ""),
+                    "effective_from": meta.get("effective_from", ""),
+                    "effective_to": meta.get("effective_to", ""),
+                    "reviewed_at": meta.get("reviewed_at", "")})
     return out
 
 
@@ -123,7 +169,13 @@ def inspect_index(persist_dir: str = "data/chroma", provider=None) -> list[dict]
     collection = _collection(persist_dir, provider)
     res = collection.get()
     return [{"id": _id, "state": (meta or {}).get("state"),
-             "source": (meta or {}).get("source"), "text": doc}
+             "source": (meta or {}).get("source"), "text": doc,
+             "jurisdiction": (meta or {}).get("jurisdiction", ""),
+             "statute_version": (meta or {}).get("statute_version", ""),
+             "statute_status": (meta or {}).get("statute_status", ""),
+             "effective_from": (meta or {}).get("effective_from", ""),
+             "effective_to": (meta or {}).get("effective_to", ""),
+             "reviewed_at": (meta or {}).get("reviewed_at", "")}
             for _id, doc, meta in zip(res["ids"], res["documents"], res["metadatas"])]
 
 

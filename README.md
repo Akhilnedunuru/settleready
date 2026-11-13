@@ -81,7 +81,8 @@ Claim email + PDFs
 - **Return tally** — episodic memory. At 3 returns with the same state and reason, that check is promoted to a mandatory upfront verification, rendered first in the next report.
 - **Guardrails** — PII redaction before storage (SSNs, card numbers, dates of birth), prompt-injection blocking on inbound text, confidence and schema checks on outbound extraction, sender verification on replies.
 - **Observability** — per-run traces with timing and token/cost metering, structured JSON logs, guardrail decisions, and an aggregate metrics dashboard (total runs, failure rate, cost).
-- **Deterministic ACV** — money math never goes through the LLM: mean of comparables − $150 per full 10k miles over 50k − condition adjustment (fair −$300, poor −$800).
+- **Deterministic ACV** — money math never goes through the LLM: mean of comparables − $150 per full 10k miles over 50k − condition adjustment (fair −$300, poor −$800). Comparable prices are retained so Grounding and the AI Reviewer can independently recompute and validate the worksheet.
+- **Statute provenance** — every statute chunk carries jurisdiction, version, currency status, effective interval, and review date. Research declines unless the provision is current and was effective on the case's loss date.
 
 **Tech stack:** Python 3.11 · LangGraph (multi-agent orchestration + disposition planner) · GPT-4o-mini via a pluggable provider interface · Chroma (local vector store) · pdfplumber / pypdf / Tesseract OCR · Pydantic · Streamlit UI · SQLite (Case Blackboard + audit log).
 

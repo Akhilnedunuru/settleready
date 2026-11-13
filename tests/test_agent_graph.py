@@ -18,6 +18,7 @@ from settleready.agents.reviewer import (
 )
 from settleready.memory.blackboard import CaseBlackboard
 from settleready.memory.tally import ReturnTallyStore
+from settleready.tools.acv import compute_acv
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,11 @@ def _seed_case(data_dir, case_id="TL-2026-1099", verification=None, legal=None,
         "answer": "Total loss when repairs+salvage >= 100% of ACV.",
         "citations": ["TX.md"], "chunks": [],
         "citation_check": {"passed": True, "reason": ""}})
-    bb.write(case_id, "acv", {"acv": acv, "worksheet": {"steps": ["s1"]}})
+    comparables = [{"price": acv}]
+    computed_acv, worksheet = compute_acv(comparables=comparables, mileage=41000)
+    assert computed_acv == acv
+    bb.write(case_id, "acv", {"acv": computed_acv, "worksheet": worksheet,
+                              "comparables": comparables})
     bb.close()
 
 
@@ -131,6 +136,33 @@ def test_reviewer_veto_declined_legal(tmp_path):
                          provider=_NoCallProvider())
     assert out["decision"] == "return"
     assert out["reason_codes"] == ["WRONG_STATE_LAW"]
+
+
+def test_reviewer_veto_acv_validation_failure_no_llm_call(tmp_path):
+    dd = str(tmp_path)
+    _seed_case(dd)
+    bb = CaseBlackboard(os.path.join(dd, "blackboard.db"))
+    bb.write("TL-2026-1099", "acv", {
+        "acv": 17900, "worksheet": {"steps": []},
+        "comparables": [{"price": 17800}]})
+    bb.close()
+    out = ai_review_case("TL-2026-1099", data_dir=dd,
+                         provider=_NoCallProvider())
+    assert out["decision"] == "return"
+    assert out["reason_codes"] == ["ACV_VALIDATION_FAILED"]
+    assert out["degraded"] is False
+
+
+def test_reviewer_veto_acv_without_retained_comparables(tmp_path):
+    dd = str(tmp_path)
+    _seed_case(dd)
+    bb = CaseBlackboard(os.path.join(dd, "blackboard.db"))
+    bb.write("TL-2026-1099", "acv", {"acv": 17800, "worksheet": {"steps": []}})
+    bb.close()
+    out = ai_review_case("TL-2026-1099", data_dir=dd,
+                         provider=_NoCallProvider())
+    assert out["decision"] == "return"
+    assert out["reason_codes"] == ["ACV_VALIDATION_FAILED"]
 
 
 def test_reviewer_approve_clean_packet(tmp_path):

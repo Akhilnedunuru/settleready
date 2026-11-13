@@ -85,6 +85,25 @@ def test_matching_lienholder_is_verified_no_conflict(tmp_path):
     assert out["passed"] is True
 
 
+def test_title_state_mismatch_preserves_both_states(tmp_path):
+    seed_main(seed=42, out=str(tmp_path), num_cases=3)
+    spec = _spec(str(tmp_path), "TL-2026-1044")  # title registry: GA
+    fields = _fields(spec, title_state={
+        "value": "TX", "confidence": 1.0, "source": "claim_form.pdf p.1"})
+    out = verify_case("TL-2026-1044", fields, spec["documents"],
+                      data_dir=str(tmp_path))
+    assert out["passed"] is False
+    assert out["requires_analyst_verification"] is True
+    (cf,) = [c for c in out["conflicts"]
+             if c["reason_code"] == "TITLE_STATE_MISMATCH"]
+    assert cf["field"] == "title_state"
+    assert cf["submitted"] == {"value": "TX", "source": "claim_form.pdf p.1"}
+    assert cf["authoritative"] == {"value": "GA",
+                                    "source": "state title registry"}
+    assert cf["status"] == "unresolved"
+    assert any("title state" in n for n in needs_from_report(out))
+
+
 def test_mismatch_is_customer_actionable_and_returnable(tmp_path):
     seed_main(seed=42, out=str(tmp_path), num_cases=3)
     spec = _spec(str(tmp_path), "TL-2026-1045")
