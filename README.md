@@ -23,57 +23,40 @@ Full detail — flowchart, component glossary, traced example, and design decisi
 Claim email + PDFs
       │
       ▼
-┌─────────────┐
-│   Intake    │  Route by case ID; classify replies (info vs. question);
-│             │  verify the sender; save attachments (PDF/images, ≤10 MB)
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│   Extract   │  ReAct loop over the documents; LLM pulls 8 required fields
-│             │  with confidence scores + source spans. If the LLM is down,
-│             │  a regex fallback extracts what it can (capped at 0.7).
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│   Verify    │  Deterministic fan-out: title registry, lienholder registry,
-│             │  CLUE claims history, valuation comparables. Mismatches are
-│             │  preserved as structured conflicts — both values, both
-│             │  sources — never silently resolved. Fields below 0.8
-│             │  confidence fail verification.
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│  Research   │  State total-loss law via retrieval, with a jurisdiction
-│             │  filter applied before vector search. Every answer is
-│             │  citation-checked against the retrieved passages.
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│  Disposition│  For non-clean cases, a beam search plans the customer
-│  Planner    │  follow-up: a generator proposes email groupings, a critic
-│             │  scores each against a fixed rubric, the controller keeps
-│             │  the best plan. One combined email beats two single asks.
-│             │  Clean cases skip this entirely.
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│   Outreach  │  Sends the info-request email (max 3 follow-ups, deduped by
-│             │  need-set). Bounces and send failures flag the case for a
-│             │  human instead of leaving it waiting.
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│   Reviewer  │  Deterministic vetoes first, then one LLM first-pass. If the
-│             │  model fails or returns an invalid verdict, the case
-│             │  escalates — it never approves by default.
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│ Human review│  Senior analyst approves (only from ready_for_review, with
-│             │  no unresolved conflicts and a computed ACV) or returns
-│             │  with a reason code (max 2 returns, then escalation).
-└─────────────┘
+   Intake ─────────► Match the email to its case (case ID in the subject).
+      │              Sort replies into "new information" vs. "customer
+      │              question". Save attachments (PDF/images, up to 10 MB).
+      ▼
+ Ingestion ────────► Read the documents and pull out the 8 required facts.
+      │
+      ▼
+ Grounding ────────► Check the facts against the official registries.
+      │              If everything checks out, also research the state
+      │              law and compute what the car was worth.
+      │
+      ├── NOT clean ─► Disposition planner ─► Outreach
+      │                  (plans ONE combined      (sends the follow-up email;
+      │                   follow-up email)         the case then waits)
+      │                                                │
+      │                  customer replies ─────────────┘
+      │                  (the reply goes back to Intake and the
+      │                   case is processed again)
+      │
+      └── clean ─► AI Reviewer ─► Human review
+                      (fixed-rule vetoes    (senior analyst approves
+                       first, then an        or returns the case)
+                       AI first pass)
 ```
+
+**What each step does, in plain words**
+
+1. **Intake.** An email arrives (the watcher checks the inbox every 65 seconds, and the "Check inbox now" button in the UI runs the same check immediately). Intake works out which case the email belongs to, saves any attachments, and sorts replies: a reply that provides information re-runs the case; a reply that asks a question is flagged for the analyst instead, so it never triggers pointless rework. Replies are also checked against the claimant's email address — see *Sender verification* below for how strict that check is.
+2. **Ingestion (extraction).** Reads the claim form and the customer's documents and pulls out the 8 required facts: VIN, mileage, title state, policy number, holder name, loss type, loss date, and whether a loan on the car was declared. Every fact carries a confidence score and a pointer to where it was found. If the AI model is unavailable, a simpler pattern-matching backup extracts what it can, and its confidence is capped at 0.7.
+3. **Grounding (checking, then research and value).** First, the facts are checked against the official records: the title registry, the lienholder registry (a lien is money still owed on the car to a bank or lender), the CLUE claims-history database, and price comparables for similar cars. If the form and a registry disagree, **both** values are kept side by side as a conflict — nothing is silently overwritten. Any required fact with confidence below 0.8 also fails this step. Only when the checks pass does Grounding continue: it looks up the state's total-loss law (the search can only return that state's law, and the law must have been in force on the loss date), checks every legal statement against the passages it came from, and computes the car's value (the ACV) using fixed math — never the AI model — then independently re-checks that math.
+4. **Disposition planner.** Only for cases that are **not** clean. It plans the follow-up email to the customer using a small search: a generator proposes ways to group the missing items into emails, a critic scores each plan against a fixed rubric, and the best plan wins. One combined email beats two separate asks. Only the first email of the plan is sent; the rest is re-planned when the customer replies.
+5. **Outreach.** Sends the follow-up email. Hard limits: at most 3 follow-ups per case, and the same need is never asked twice. If an email bounces or fails to send, the case is flagged for a human instead of being left waiting.
+6. **AI Reviewer.** Only sees clean cases. It applies fixed-rule vetoes first (for example: a value worksheet that doesn't recompute correctly can never pass), then an AI first pass. If the AI model fails or answers in a format it can't use, the case is escalated to a human — the reviewer never approves by default. It can return a case for rework at most 2 times.
+7. **Human review.** A senior analyst makes the final call. They can approve only a case that is `ready_for_review`, has no unresolved conflicts, and has a computed value. They can return a case with a reason code at most 2 times; after that the case escalates. **The system prepares cases — it never settles one on its own.**
 
 **Supporting systems**
 
@@ -133,7 +116,7 @@ bash scripts/gen_customer_docs.sh  # pre-generate the documents a customer would
 bash scripts/start.sh
 ```
 
-This starts two processes in one terminal: the **intake watcher** (polls the inbox, fires the pipeline when a claim email arrives) and the **Streamlit UI** (the analyst workbench). Ctrl-C stops both. To stop them separately: `bash scripts/stop.sh`.
+This starts two processes in one terminal: the **intake watcher** (polls the inbox, fires the pipeline when a claim email arrives) and the **Streamlit UI** (the analyst workbench). To stop them reliably, run `bash scripts/stop.sh` from a second terminal — it terminates both by name (Ctrl-C can leave the background watcher running).
 
 Or run the pieces individually:
 
@@ -235,7 +218,7 @@ src/settleready/
   guardrails/     input/output screening, PII redaction
   ui/             Streamlit analyst workbench
   pipeline.py     wires every module together
-tests/            167 tests (interface + regression)
+tests/            184 tests (interface + regression)
 docs/             architecture deep-dive
 data/             generated at runtime (gitignored): fixtures, Chroma index, inbox/outbox
 ```
@@ -249,7 +232,7 @@ See `.env.example`. Only `OPENAI_API_KEY` is required. Notable options:
 | `SETTLEREADY_PROVIDER` | `openai` | `openai` or `ollama` (local model, stub) |
 | `SETTLEREADY_CHAT_MODEL` | `gpt-4o-mini` | Chat model for extraction, planning, review |
 | `SETTLEREADY_EMBED_MODEL` | `text-embedding-3-small` | Embedding model for the statute index |
-| `SETTLEREADY_EMAIL_SOURCE` | `mock` | `mock` or `gmail` |
+| `SETTLEREADY_EMAIL_SOURCE` | `mock` | `mock`, `relay` (shared demo mailbox), or `gmail` |
 | `SETTLEREADY_ENFORCE_SENDER_CHECK` | unset (off) | Set to `1` to reject replies from non-claimant addresses |
 | `SETTLEREADY_LOG_LEVEL` | `INFO` | Structured log verbosity |
 | `LANGSMITH_API_KEY` | unset | Optional hosted tracing dashboard (see LangSmith section above); also needs `LANGCHAIN_TRACING_V2=true` |
