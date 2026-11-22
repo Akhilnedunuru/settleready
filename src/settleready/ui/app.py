@@ -5,7 +5,7 @@ UI — the workbench is where the senior analyst reviews what the agent prepared
 
 Event-driven updates: the watcher/pipeline/agents emit events to
 data/events.jsonl (see settleready.memory.events). Each dynamic fragment ticks
-every 2s but only re-renders from cheap local reads; there is no blind polling
+every 10s and re-renders from local reads; there is no blind polling
 timer and no IMAP polling from the UI. While a case's pipeline is running, the
 Packet tab shows a live activity panel streaming the agent's ReAct thinking.
 After the run finishes, the panel keeps the full activity history so the flow
@@ -57,6 +57,18 @@ def _case_ids() -> list[str]:
         bb.close()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _index_contents(persist_dir: str) -> list[dict]:
+    """RAG index contents, cached for 5 minutes: opening the Chroma store is
+    expensive (client + collection load), and the Packet tab renders inside an
+    auto-refreshing fragment — paying that cost on every tick saturated the
+    server and made the whole UI feel slow. The index only changes on a
+    rebuild, so a long TTL is safe."""
+    from settleready.tools.rag import inspect_index
+
+    return inspect_index(persist_dir=persist_dir)
+
+
 def _selected() -> str | None:
     ids = _case_ids()
     if not ids:
@@ -72,7 +84,7 @@ def _need_case() -> str | None:
 
 
 def _flash(kind: str, msg: str) -> None:
-    """Queue a feedback message that survives the 2s fragment re-renders.
+    """Queue a feedback message that survives the fragment re-renders.
 
     Plain st.success/warning calls vanish on the next auto-refresh tick, which
     makes button clicks look dead. Flashed messages persist ~30s.
@@ -92,11 +104,11 @@ def _show_flash() -> None:
         getattr(st, kind)(msg)
 
 
-@st.fragment(run_every=2)
+@st.fragment(run_every=10)
 def case_picker() -> None:
     """Global case picker, always visible above the tabs.
 
-    Event-driven: re-queries the case registry every 2s (one cheap SQLite
+    Event-driven: re-queries the case registry every 10s (one cheap SQLite
     read), so cases the watcher creates appear here ~instantly.
     (Kept global — rendering it per-tab causes duplicate widget keys,
     since Streamlit registers elements in all tabs, not just the visible one.)
@@ -340,7 +352,7 @@ def _render_email_message(ev: dict) -> None:
                 st.write(d["body"])
 
 
-@st.fragment(run_every=2)
+@st.fragment(run_every=10)
 def tab_emails():
     st.header("Emails — intake")
     st.caption("Event-driven: this list rebuilds from the watcher's event log — "
@@ -403,7 +415,7 @@ def tab_emails():
         st.rerun()
 
 
-@st.fragment(run_every=2)
+@st.fragment(run_every=10)
 def tab_packet():
     st.header("Case packet")
     case_id = _need_case()
@@ -559,8 +571,7 @@ def tab_packet():
             st.divider()
     with st.expander("RAG index contents — what was indexed"):
         try:
-            from settleready.tools.rag import inspect_index
-            indexed = inspect_index(persist_dir=os.path.join(DATA_DIR, "chroma"))
+            indexed = _index_contents(os.path.join(DATA_DIR, "chroma"))
             st.write(f"{len(indexed)} chunks in the index")
             for item in indexed:
                 st.markdown(f"**{item['id']}** [{item['state']}/{item['source']}]")
@@ -593,11 +604,11 @@ def tab_packet():
                 st.caption("The customer's reply (same subject) re-triggers the pipeline via the watcher.")
 
 
-@st.fragment(run_every=2)
+@st.fragment(run_every=10)
 def tab_review():
     st.header("Senior analyst review")
     st.caption("Follows the event log — a finished pipeline or a new return "
-               "updates this tab within ~2s.")
+               "updates this tab within ~10s.")
     case_id = _need_case()
     if case_id is None:
         return
@@ -701,13 +712,13 @@ def tab_review():
             st.rerun()
 
 
-@st.fragment(run_every=2)
+@st.fragment(run_every=10)
 def tab_audit():
     st.header("Audit trail")
     case_id = _need_case()
     if case_id is None:
         return
-    st.caption("Follows the event log — new stage transitions appear within ~2s. "
+    st.caption("Follows the event log — new stage transitions appear within ~10s. "
                "Every submitted case is tracked here from creation to decision.")
     bb = CaseBlackboard(os.path.join(DATA_DIR, "blackboard.db"))
     log = bb.audit_log(case_id)
@@ -732,7 +743,7 @@ def tab_audit():
 
 
 # ------------------------------------------------------------------ main ---
-@st.fragment(run_every=2)
+@st.fragment(run_every=10)
 def tab_observability():
     """Module 6 observability: traces, costs, logs, guardrails for the case."""
     st.header("Observability")
@@ -740,7 +751,7 @@ def tab_observability():
     if case_id is None:
         return
     st.caption("Module 6 — traces, token/cost, structured logs, and guardrail "
-               "decisions for this case. Refreshes every 2s.")
+               "decisions for this case. Refreshes every 10s.")
 
     # -- Suspicion score (Lab 6.2, lightweight) ----------------------------
     with st.container(border=True):
