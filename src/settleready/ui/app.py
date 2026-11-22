@@ -389,19 +389,42 @@ def tab_emails():
                     _render_email_message(ev)
 
     if st.button("🔄 Check inbox now"):
-        # Manual IMAP peek only — the watcher owns continuous polling.
-        mail = get_email_client(data_dir=DATA_DIR)
+        # Fetch AND process now: the same poll_once the watcher runs on its
+        # 65s timer, triggered on demand so nobody waits for the cycle.
+        # Note: if the watcher polls at the exact same moment, an email can
+        # be processed twice (the seen-state file has no locking) — rare in
+        # practice and harmless for the demo.
+        from settleready.agents.intake import IntakeWatcher
         try:
-            from settleready.agents.intake import is_claim_email
-            inbox = [e for e in mail.poll_inbox() if is_claim_email(e)]
-            st.success(f"Inbox check: {len(inbox)} claim email(s) waiting — "
-                       "the watcher will process them on its next poll.")
+            with st.spinner("Fetching and processing inbox…"):
+                actions = IntakeWatcher(data_dir=DATA_DIR).poll_once()
         except Exception as e:  # noqa: BLE001 — bad creds shouldn't kill the app
             st.warning(
                 "Couldn't reach the email inbox: "
                 f"{e}\n\nIf you set `SETTLEREADY_EMAIL_SOURCE=gmail`, check `GMAIL_ADDRESS` / "
                 "`GMAIL_APP_PASSWORD` in your `.env` (app password needs 2-Step Verification on). "
                 "Remove that line to use the mock inbox.")
+        else:
+            if not actions:
+                st.success("Inbox check: no new emails to process.")
+            else:
+                triggered = sum(1 for a in actions
+                                if a.get("action") == "pipeline_triggered")
+                failed = [a for a in actions if a.get("action") in
+                          ("pipeline_failed", "failed_retry_next_poll")]
+                st.success(
+                    f"Inbox check: processed {len(actions)} email(s) — "
+                    f"{triggered} new claim(s) run through the pipeline.")
+                if failed:
+                    st.warning(
+                        f"{len(failed)} email(s) failed and will retry on the "
+                        "next check: " +
+                        "; ".join(str(a.get("detail", ""))[:120] for a in failed))
+                with st.expander("What was processed"):
+                    for a in actions:
+                        st.write(f"- {a.get('email')}: {a.get('action')}"
+                                 + (f" — {a.get('detail')}"
+                                    if a.get("detail") else ""))
     # Demo transport only: with real Gmail, replies arrive as real emails.
     selected = _selected()
     mail = get_email_client(data_dir=DATA_DIR)
